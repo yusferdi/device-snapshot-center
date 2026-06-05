@@ -1,0 +1,882 @@
+import { execFile } from "node:child_process";
+import { execSync } from "child_process";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
+import robot from "robotjs";
+import screenshotDesktop from "screenshot-desktop";
+
+const execFileAsync = promisify(execFile);
+const AGENT_VERSION = "1.4.0";
+const CONFIG_PATH = path.resolve("agent.config.json");
+const EXAMPLE_CONFIG_PATH = path.resolve("agent.config.example.json");
+const STATE_PATH = path.resolve("agent.state.json");
+
+const DIAGNOSTIC_COMMANDS = {
+  node_version: {
+    file: process.platform === "win32" ? "node.exe" : "node",
+    args: ["--version"],
+  },
+  npm_version: {
+    file: process.platform === "win32" ? "npm.cmd" : "npm",
+    args: ["--version"],
+  },
+  git_version: {
+    file: process.platform === "win32" ? "git.exe" : "git",
+    args: ["--version"],
+  },
+};
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function readJson(filePath, fallback = null) {
+  try {
+    const raw = await fsp.readFile(filePath, "utf8");
+    return JSON.parse(raw);
+  } catch (error) {
+    if (fallback !== null && error.code === "ENOENT") {
+      return fallback;
+    }
+    throw error;
+  }
+}
+
+async function writeJson(filePath, value) {
+  await fsp.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+async function loadConfig() {
+  const exists = fs.existsSync(CONFIG_PATH);
+  if (!exists) {
+    const exampleExists = fs.existsSync(EXAMPLE_CONFIG_PATH);
+    if (!exampleExists) {
+      throw new Error("agent.config.json is missing.");
+    }
+    throw new Error("Copy agent.config.example.json to agent.config.json and edit it first.");
+  }
+
+  const config = await readJson(CONFIG_PATH);
+  const configuredServerUrl = config.serverUrl || config.serverUri;
+  if (!configuredServerUrl || !config.enrollmentCode) {
+    throw new Error("serverUrl/serverUri and enrollmentCode are required in agent.config.json.");
+  }
+
+  return {
+    serverUrl: String(configuredServerUrl).replace(/\/+$/, ""),
+    enrollmentCode: String(config.enrollmentCode),
+    deviceName: String(config.deviceName || os.hostname()),
+    pollIntervalMs: Number(config.pollIntervalMs || 5000),
+    logDirectory: path.resolve(String(config.logDirectory || "./logs")),
+    fileTransferRoot: path.resolve(String(config.fileTransferRoot || "./transfer")),
+    maxUploadBytes: Number(config.maxUploadBytes || 5 * 1024 * 1024),
+    maxTransferBytes: Number(config.maxTransferBytes || config.maxUploadBytes || 5 * 1024 * 1024),
+    allowScreenCapture: Boolean(config.allowScreenCapture),
+    allowRemoteControl: Boolean(config.allowRemoteControl),
+    allowKeyboardInput: Boolean(config.allowKeyboardInput),
+    allowFileTransfer: Boolean(config.allowFileTransfer),
+    allowSessionRecording: Boolean(config.allowSessionRecording),
+    screenCaptureQuality: Number(config.screenCaptureQuality || 72),
+  };
+}
+
+async function loadState() {
+  const state = await readJson(STATE_PATH, {});
+  if (!state.deviceUid) {
+    state.deviceUid = crypto.randomUUID();
+    await writeJson(STATE_PATH, state);
+  }
+  return state;
+}
+
+async function apiJson(config, endpoint, body, token = null) {
+  const headers = {
+    "Content-Type": "application/json",
+  };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const response = await fetch(`${config.serverUrl}${endpoint}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body || {}),
+  });
+
+  const text = await response.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`Server returned non-JSON response (${response.status}): ${text.slice(0, 200)}`);
+  }
+
+  if (!response.ok || data.ok === false) {
+    throw new Error(data.error || `Server request failed with status ${response.status}`);
+  }
+
+  return data;
+}
+
+async function enrollIfNeeded(config, state) {
+  if (state.deviceToken && state.serverUrl === config.serverUrl) {
+    return state;
+  }
+  if (state.deviceToken && state.serverUrl !== config.serverUrl) {
+    delete state.deviceId;
+    delete state.deviceToken;
+  }
+
+  console.log("[agent] enrolling device");
+  const result = await apiJson(config, "/api/enroll.php", {
+    enrollment_code: config.enrollmentCode,
+    device_uid: state.deviceUid,
+    name: config.deviceName,
+    platform: `${os.platform()} ${os.release()} ${os.arch()}`,
+    hostname: os.hostname(),
+    agent_version: AGENT_VERSION,
+  });
+
+  state.deviceId = result.device_id;
+  state.deviceToken = result.device_token;
+  state.serverUrl = config.serverUrl;
+  await writeJson(STATE_PATH, state);
+  console.log(`[agent] enrolled as device_id=${state.deviceId}`);
+  return state;
+}
+
+function summarizeSystemInfo() {
+  const cpus = os.cpus();
+  return {
+    hostname: os.hostname(),
+    platform: os.platform(),
+    release: os.release(),
+    arch: os.arch(),
+    uptimeSeconds: os.uptime(),
+    totalMemoryBytes: os.totalmem(),
+    freeMemoryBytes: os.freemem(),
+    cpuCount: cpus.length,
+    cpuModel: cpus[0]?.model || "unknown",
+    nodeVersion: process.version,
+    agentVersion: AGENT_VERSION,
+  };
+}
+
+function summarizeNetworkInterfaces() {
+  const interfaces = os.networkInterfaces();
+  const result = {};
+
+  for (const [name, entries] of Object.entries(interfaces)) {
+    result[name] = (entries || []).map((entry) => ({
+      family: entry.family,
+      address: entry.address,
+      internal: entry.internal,
+      cidr: entry.cidr,
+    }));
+  }
+
+  return result;
+}
+
+async function listLogFiles(config) {
+  await fsp.mkdir(config.logDirectory, { recursive: true });
+  const entries = await fsp.readdir(config.logDirectory, { withFileTypes: true });
+  const files = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile()) {
+      continue;
+    }
+
+    const absolute = path.join(config.logDirectory, entry.name);
+    const stat = await fsp.stat(absolute);
+    files.push({
+      name: entry.name,
+      sizeBytes: stat.size,
+      modifiedAt: stat.mtime.toISOString(),
+    });
+  }
+
+  return files.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function resolveLogPath(config, relativePath) {
+  if (!relativePath || typeof relativePath !== "string") {
+    throw new Error("payload.relativePath is required.");
+  }
+
+  const normalized = relativePath.replace(/\\/g, "/");
+  if (normalized.includes("..") || path.isAbsolute(normalized)) {
+    throw new Error("relativePath must stay inside logDirectory.");
+  }
+
+  const root = path.resolve(config.logDirectory);
+  const target = path.resolve(root, normalized);
+  if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+    throw new Error("relativePath resolved outside logDirectory.");
+  }
+
+  return target;
+}
+
+function normalizeRelativePath(relativePath) {
+  const normalized = String(relativePath || "").replace(/\\/g, "/").replace(/^\/+/, "");
+  if (normalized.includes("..") || path.isAbsolute(normalized)) {
+    throw new Error("Path must stay inside the configured root.");
+  }
+  return normalized;
+}
+
+function resolveTransferPath(config, relativePath = "") {
+  const root = path.resolve(config.fileTransferRoot);
+  const normalized = normalizeRelativePath(relativePath);
+  const target = path.resolve(root, normalized);
+  if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+    throw new Error("Path resolved outside fileTransferRoot.");
+  }
+  return { root, target, relativePath: normalized };
+}
+
+async function ensureFileTransfer(config) {
+  if (!config.allowFileTransfer) {
+    throw new Error("File transfer is disabled in agent.config.json.");
+  }
+  await fsp.mkdir(config.fileTransferRoot, { recursive: true });
+}
+
+async function listTransferFiles(config, payload) {
+  await ensureFileTransfer(config);
+  const { target, relativePath } = resolveTransferPath(config, payload?.path || "");
+  const stat = await fsp.stat(target).catch(() => null);
+  if (!stat || !stat.isDirectory()) {
+    throw new Error("Remote path is not a directory.");
+  }
+
+  const entries = await fsp.readdir(target, { withFileTypes: true });
+  const result = [];
+  for (const entry of entries.slice(0, 200)) {
+    const absolute = path.join(target, entry.name);
+    const entryStat = await fsp.stat(absolute);
+    const entryRelative = [relativePath, entry.name].filter(Boolean).join("/");
+    result.push({
+      name: entry.name,
+      relativePath: entryRelative,
+      isDirectory: entry.isDirectory(),
+      sizeBytes: entry.isDirectory() ? 0 : entryStat.size,
+      modifiedAt: entryStat.mtime.toISOString(),
+    });
+  }
+
+  return {
+    root: config.fileTransferRoot,
+    path: relativePath,
+    entries: result.sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.name.localeCompare(b.name)),
+    listedAt: new Date().toISOString(),
+  };
+}
+
+async function pullTransferFile(config, state, commandId, payload) {
+  await ensureFileTransfer(config);
+  const { target, relativePath } = resolveTransferPath(config, payload?.relativePath || "");
+  const stat = await fsp.stat(target);
+  if (!stat.isFile()) {
+    throw new Error("Remote path is not a file.");
+  }
+  if (stat.size > config.maxTransferBytes) {
+    throw new Error(`File exceeds maxTransferBytes (${config.maxTransferBytes}).`);
+  }
+
+  const artifact = await uploadArtifact(config, state, commandId, target, path.basename(target));
+  return {
+    relativePath,
+    sizeBytes: stat.size,
+    uploaded: artifact,
+  };
+}
+
+async function downloadCommandArtifact(config, state, commandId) {
+  const response = await fetch(`${config.serverUrl}/api/artifact-download.php?command_id=${encodeURIComponent(String(commandId))}`, {
+    headers: {
+      Authorization: `Bearer ${state.deviceToken}`,
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`Server artifact download failed (${response.status})`);
+  }
+  return Buffer.from(await response.arrayBuffer());
+}
+
+async function putTransferFile(config, state, commandId, payload) {
+  await ensureFileTransfer(config);
+  const targetName = safeTransferFileName(String(payload?.targetName || `upload-${commandId}.bin`));
+  let savedName = targetName;
+  let { target } = resolveTransferPath(config, targetName);
+  const buffer = await downloadCommandArtifact(config, state, commandId);
+  if (buffer.length <= 0 || buffer.length > config.maxTransferBytes) {
+    throw new Error(`Downloaded file exceeds maxTransferBytes (${config.maxTransferBytes}).`);
+  }
+  await fsp.mkdir(path.dirname(target), { recursive: true });
+  await fsp.writeFile(target, buffer, { flag: "wx" }).catch(async (error) => {
+    if (error.code !== "EEXIST") {
+      throw error;
+    }
+    const parsed = path.parse(targetName);
+    savedName = `${parsed.name}-${Date.now()}${parsed.ext}`;
+    target = resolveTransferPath(config, savedName).target;
+    await fsp.writeFile(target, buffer, { flag: "wx" });
+  });
+
+  return {
+    targetName: savedName,
+    relativePath: savedName,
+    sizeBytes: buffer.length,
+    savedAt: new Date().toISOString(),
+  };
+}
+
+function safeTransferFileName(name) {
+  const base = path.basename(name.replace(/\\/g, "/")).replace(/[^a-zA-Z0-9._ ()-]/g, "_").replace(/^[. ]+|[. ]+$/g, "");
+  return base || "upload.bin";
+}
+
+async function runDiagnostic(payload) {
+  const name = String(payload?.name || "");
+  const command = DIAGNOSTIC_COMMANDS[name];
+  if (!command) {
+    throw new Error(`Diagnostic "${name}" is not allowed.`);
+  }
+
+  const { stdout, stderr } = await execFileAsync(command.file, command.args, {
+    timeout: 5000,
+    windowsHide: false,
+    maxBuffer: 128 * 1024,
+  });
+
+  return {
+    name,
+    stdout: stdout.trim(),
+    stderr: stderr.trim(),
+  };
+}
+
+async function uploadArtifact(config, state, commandId, filePath, fileName, mimeType = "application/octet-stream") {
+  const stat = await fsp.stat(filePath);
+  if (!stat.isFile()) {
+    throw new Error("Selected artifact is not a file.");
+  }
+  if (stat.size > config.maxUploadBytes) {
+    throw new Error(`File exceeds maxUploadBytes (${config.maxUploadBytes}).`);
+  }
+
+  const buffer = await fsp.readFile(filePath);
+  const form = new FormData();
+  form.append("command_id", String(commandId));
+  form.append("artifact", new Blob([buffer], { type: mimeType }), fileName);
+
+  const response = await fetch(`${config.serverUrl}/api/upload.php`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${state.deviceToken}`,
+    },
+    body: form,
+  });
+
+  const text = await response.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`Upload returned non-JSON response (${response.status}): ${text.slice(0, 500)}`);
+  }
+  if (!response.ok || data.ok === false) {
+    throw new Error(data.error || `Upload failed with status ${response.status}`);
+  }
+
+  return data.artifact;
+}
+
+function clampNumber(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, number));
+}
+
+async function removeQuietly(targetPath) {
+  if (!targetPath) {
+    return;
+  }
+
+  try {
+    await fsp.rm(targetPath, { recursive: true, force: true });
+  } catch {
+    // Temp cleanup is best-effort.
+  }
+}
+
+async function captureScreen(config, payload) {
+  if (!config.allowScreenCapture) {
+    throw new Error("Screen capture is disabled in agent.config.json.");
+  }
+
+  const timeoutMs = Math.round(clampNumber(payload?.timeoutMs, 3000, 30000, 15000));
+  const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "device-snapshot-"));
+  const fileName = `screen-${new Date().toISOString().replace(/[:.]/g, "-")}.jpg`;
+  const filePath = path.join(tempDir, fileName);
+
+  try {
+    const displays = await screenshotDesktop.listDisplays().catch(() => []);
+    const resolvedPath = await Promise.race([
+      screenshotDesktop({ filename: filePath, format: "jpg" }),
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error(`Screen capture timed out after ${timeoutMs}ms.`)), timeoutMs);
+      }),
+    ]);
+    const stat = await fsp.stat(resolvedPath);
+    return {
+      filePath: resolvedPath,
+      fileName,
+      mimeType: "image/jpeg",
+      cleanupDir: tempDir,
+      metadata: {
+        path: resolvedPath,
+        bytes: stat.size,
+        capturedAt: new Date().toISOString(),
+        displays,
+      },
+    };
+  } catch (error) {
+    await removeQuietly(tempDir);
+    throw error;
+  }
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+async function recordSession(config, payload) {
+  if (!config.allowScreenCapture || !config.allowSessionRecording) {
+    throw new Error("Session recording is disabled in agent.config.json.");
+  }
+
+  const durationSeconds = Math.round(clampNumber(payload?.durationSeconds, 3, 30, 10));
+  const intervalMs = Math.round(clampNumber(payload?.intervalMs, 800, 5000, 1500));
+  const frameCount = Math.max(2, Math.min(24, Math.ceil((durationSeconds * 1000) / intervalMs)));
+  const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "device-recording-"));
+  const frames = [];
+
+  try {
+    for (let index = 0; index < frameCount; index += 1) {
+      const frame = await captureScreen(config, { timeoutMs: 15000 });
+      const bytes = await fsp.readFile(frame.filePath);
+      frames.push({
+        index,
+        capturedAt: frame.metadata.capturedAt,
+        dataUrl: `data:image/jpeg;base64,${bytes.toString("base64")}`,
+      });
+      await removeQuietly(frame.cleanupDir);
+      if (index < frameCount - 1) {
+        await sleep(intervalMs);
+      }
+    }
+
+    const fileName = `recording-${new Date().toISOString().replace(/[:.]/g, "-")}.html`;
+    const filePath = path.join(tempDir, fileName);
+    const slides = frames.map((frame, index) => `
+      <figure class="frame${index === 0 ? " active" : ""}" data-frame="${index}">
+        <img src="${frame.dataUrl}" alt="Frame ${index + 1}">
+        <figcaption>Frame ${index + 1} / ${frames.length} - ${escapeHtml(frame.capturedAt)}</figcaption>
+      </figure>`).join("\n");
+    const html = `<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Device Session Recording</title>
+<style>
+body{margin:0;background:#0e1726;color:#e5edf7;font-family:Inter,Segoe UI,Arial,sans-serif}
+main{min-height:100vh;display:grid;grid-template-rows:auto 1fr auto;gap:12px;padding:14px}
+header,footer{display:flex;align-items:center;justify-content:space-between;gap:12px}
+h1{font-size:18px;margin:0}.muted{color:#9fb0c4}.stage{display:grid;place-items:center;overflow:hidden;border:1px solid #2a3a52;border-radius:8px;background:#020617}
+.frame{display:none;margin:0;width:100%;height:100%}.frame.active{display:grid;grid-template-rows:minmax(0,1fr)auto}
+img{width:100%;height:100%;max-height:78vh;object-fit:contain}figcaption{padding:8px 0;color:#9fb0c4;font-size:12px}
+button{border:0;border-radius:6px;padding:9px 12px;color:#fff;background:#156f8f;font-weight:700;cursor:pointer}
+</style>
+</head>
+<body>
+<main>
+<header><h1>Device Session Recording</h1><span class="muted">${frames.length} frames</span></header>
+<section class="stage">${slides}</section>
+<footer><button id="prev">Prev</button><span id="count"></span><button id="next">Next</button></footer>
+</main>
+<script>
+const frames=[...document.querySelectorAll('.frame')];let index=0;
+function show(next){frames[index].classList.remove('active');index=(next+frames.length)%frames.length;frames[index].classList.add('active');count.textContent=(index+1)+' / '+frames.length}
+prev.onclick=()=>show(index-1);next.onclick=()=>show(index+1);show(0);setInterval(()=>show(index+1),${Math.max(1000, intervalMs)});
+</script>
+</body>
+</html>`;
+    await fsp.writeFile(filePath, html, "utf8");
+    return {
+      filePath,
+      fileName,
+      mimeType: "text/html",
+      cleanupDir: tempDir,
+      metadata: {
+        frames: frames.length,
+        durationSeconds,
+        intervalMs,
+        recordedAt: new Date().toISOString(),
+      },
+    };
+  } catch (error) {
+    await removeQuietly(tempDir);
+    throw error;
+  }
+}
+
+function clampInteger(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return fallback;
+  }
+
+  return Math.round(Math.min(max, Math.max(min, number)));
+}
+
+async function mouseClick(config, payload) {
+  if (!config.allowRemoteControl) {
+    throw new Error("Remote mouse control is disabled in agent.config.json.");
+  }
+
+  const screenSize = robot.getScreenSize();
+  const x = clampInteger(payload?.x, 0, Math.max(0, screenSize.width - 1), -1);
+  const y = clampInteger(payload?.y, 0, Math.max(0, screenSize.height - 1), -1);
+  const button = ["left", "right", "middle"].includes(String(payload?.button))
+    ? String(payload.button)
+    : "left";
+  const double = Boolean(payload?.double);
+
+  if (x < 0 || y < 0) {
+    throw new Error("payload.x and payload.y are required.");
+  }
+
+  const previous = robot.getMousePos();
+  robot.moveMouse(x, y);
+  robot.mouseClick(button, double);
+
+  return {
+    x,
+    y,
+    button,
+    double,
+    previous,
+    screenSize,
+    clickedAt: new Date().toISOString(),
+  };
+}
+
+const ROBOT_KEY_ALLOWLIST = new Set([
+  ..."abcdefghijklmnopqrstuvwxyz0123456789",
+  ",", ".", "/", ";", "'", "[", "]", "\\", "-", "=", "`",
+  "space", "backspace", "delete", "enter", "tab", "escape",
+  "up", "down", "left", "right", "home", "end", "pageup", "pagedown",
+  "insert", "capslock",
+  "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
+]);
+
+const MODIFIER_ALIASES = new Map([
+  ["ctrl", "control"],
+  ["control", "control"],
+  ["alt", "alt"],
+  ["shift", "shift"],
+]);
+
+function normalizeRobotKey(value) {
+  const key = String(value || "").toLowerCase();
+  if (!ROBOT_KEY_ALLOWLIST.has(key)) {
+    throw new Error(`Keyboard key "${key}" is not allowed.`);
+  }
+  return key;
+}
+
+function normalizeKeyboardModifiers(value) {
+  const rawModifiers = Array.isArray(value) ? value : (value ? [value] : []);
+  const modifiers = [];
+
+  for (const rawModifier of rawModifiers) {
+    const modifier = MODIFIER_ALIASES.get(String(rawModifier || "").toLowerCase());
+    if (!modifier) {
+      throw new Error(`Keyboard modifier "${rawModifier}" is not allowed.`);
+    }
+    if (!modifiers.includes(modifier)) {
+      modifiers.push(modifier);
+    }
+  }
+
+  return modifiers;
+}
+
+async function keyboardInput(config, payload) {
+  if (!config.allowRemoteControl || !config.allowKeyboardInput) {
+    throw new Error("Remote keyboard input is disabled in agent.config.json.");
+  }
+
+  const kind = String(payload?.kind || "key").toLowerCase();
+  if (kind === "text") {
+    const text = String(payload?.text || "");
+    if (!text || text.length > 512 || /[\u0000-\u001f\u007f]/.test(text)) {
+      throw new Error("payload.text is invalid.");
+    }
+    robot.typeString(text);
+    return {
+      kind: "text",
+      length: text.length,
+      typedAt: new Date().toISOString(),
+    };
+  }
+
+  if (kind !== "key") {
+    throw new Error("payload.kind must be text or key.");
+  }
+
+  const key = normalizeRobotKey(payload?.key);
+  const modifiers = normalizeKeyboardModifiers(payload?.modifiers);
+  if (key === "delete" && modifiers.includes("control") && modifiers.includes("alt")) {
+    throw new Error("Ctrl+Alt+Delete is not supported.");
+  }
+
+  robot.keyTap(key, modifiers.length ? modifiers : undefined);
+  return {
+    kind: "key",
+    key,
+    modifiers,
+    tappedAt: new Date().toISOString(),
+  };
+}
+
+async function complete(config, state, commandId, payload) {
+  await apiJson(config, "/api/complete.php", {
+    command_id: commandId,
+    ...payload,
+  }, state.deviceToken);
+}
+
+async function handleCommand(config, state, command) {
+  const id = Number(command.id);
+  const action = String(command.action);
+  const payload = command.payload || {};
+
+  console.log(`[agent] command #${id}: ${action}`);
+
+  switch (action) {
+    case "health_check":
+      await complete(config, state, id, {
+        status: "succeeded",
+        result_json: {
+          ok: true,
+          timestamp: new Date().toISOString(),
+          pid: process.pid,
+          uptimeSeconds: process.uptime(),
+        },
+      });
+      return;
+
+    case "system_info":
+      await complete(config, state, id, {
+        status: "succeeded",
+        result_json: summarizeSystemInfo(),
+      });
+      return;
+
+    case "network_interfaces":
+      await complete(config, state, id, {
+        status: "succeeded",
+        result_json: summarizeNetworkInterfaces(),
+      });
+      return;
+
+    case "list_log_files":
+      await complete(config, state, id, {
+        status: "succeeded",
+        result_json: {
+          logDirectory: config.logDirectory,
+          files: await listLogFiles(config),
+        },
+      });
+      return;
+
+    case "upload_log_file": {
+      const filePath = resolveLogPath(config, payload.relativePath);
+      const artifact = await uploadArtifact(config, state, id, filePath, path.basename(filePath));
+      await complete(config, state, id, {
+        status: "succeeded",
+        result_json: {
+          uploaded: artifact,
+        },
+      });
+      return;
+    }
+
+    case "run_diagnostic": {
+      const result = await runDiagnostic(payload);
+      await complete(config, state, id, {
+        status: "succeeded",
+        result_text: result.stdout || result.stderr || "(no output)",
+        result_json: result,
+      });
+      return;
+    }
+
+    case "capture_screen": {
+      let snapshot = null;
+      try {
+        snapshot = await captureScreen(config, payload);
+        const artifact = await uploadArtifact(
+          config,
+          state,
+          id,
+          snapshot.filePath,
+          snapshot.fileName,
+          snapshot.mimeType
+        );
+        await complete(config, state, id, {
+          status: "succeeded",
+          result_json: {
+            screen: snapshot.metadata,
+            uploaded: artifact,
+          },
+        });
+      } finally {
+        await removeQuietly(snapshot?.cleanupDir);
+      }
+      return;
+    }
+
+    case "mouse_click": {
+      const result = await mouseClick(config, payload);
+      await complete(config, state, id, {
+        status: "succeeded",
+        result_json: result,
+      });
+      return;
+    }
+
+    case "keyboard_input": {
+      const result = await keyboardInput(config, payload);
+      await complete(config, state, id, {
+        status: "succeeded",
+        result_json: result,
+      });
+      return;
+    }
+
+    case "file_list": {
+      const result = await listTransferFiles(config, payload);
+      await complete(config, state, id, {
+        status: "succeeded",
+        result_json: result,
+      });
+      return;
+    }
+
+    case "file_pull": {
+      const result = await pullTransferFile(config, state, id, payload);
+      await complete(config, state, id, {
+        status: "succeeded",
+        result_json: result,
+      });
+      return;
+    }
+
+    case "file_put": {
+      const result = await putTransferFile(config, state, id, payload);
+      await complete(config, state, id, {
+        status: "succeeded",
+        result_json: result,
+      });
+      return;
+    }
+
+    case "record_session": {
+      let recording = null;
+      try {
+        recording = await recordSession(config, payload);
+        const artifact = await uploadArtifact(
+          config,
+          state,
+          id,
+          recording.filePath,
+          recording.fileName,
+          recording.mimeType
+        );
+        await complete(config, state, id, {
+          status: "succeeded",
+          result_json: {
+            recording: recording.metadata,
+            uploaded: artifact,
+          },
+        });
+      } finally {
+        await removeQuietly(recording?.cleanupDir);
+      }
+      return;
+    }
+
+    default:
+      throw new Error(`Unsupported action: ${action}`);
+  }
+}
+
+async function pollOnce(config, state) {
+  const result = await apiJson(config, "/api/poll.php", {
+    agent_version: AGENT_VERSION,
+  }, state.deviceToken);
+  if (!result.command) {
+    return;
+  }
+
+  try {
+    await handleCommand(config, state, result.command);
+  } catch (error) {
+    console.error(`[agent] command #${result.command.id} failed: ${error.message}`);
+    await complete(config, state, Number(result.command.id), {
+      status: "failed",
+      error_text: error.stack || error.message,
+    });
+  }
+}
+
+async function main() {
+  const config = await loadConfig();
+  const state = await enrollIfNeeded(config, await loadState());
+
+  console.log(`[agent] visible agent started for "${config.deviceName}"`);
+  console.log(`[agent] polling ${config.serverUrl} every ${config.pollIntervalMs}ms`);
+  console.log(`[agent] logDirectory=${config.logDirectory}`);
+
+  while (true) {
+    try {
+      await pollOnce(config, state);
+    } catch (error) {
+      console.error(`[agent] poll error: ${error.message}`);
+    }
+    await sleep(config.pollIntervalMs);
+  }
+}
+
+main().catch((error) => {
+  console.error(`[agent] fatal: ${error.message}`);
+  process.exitCode = 1;
+});

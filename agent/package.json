@@ -1,0 +1,16 @@
+{
+  "name": "safe-device-agent",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node agent.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "robotjs": "^0.7.1",
+    "screenshot-desktop": "^1.15.4"
+  }
+}

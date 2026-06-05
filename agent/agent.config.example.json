@@ -1,0 +1,15 @@
+{
+  "serverUri": "https://lppsp.ui.ac.id/any/server",
+  "enrollmentCode": "change-me-locally",
+  "deviceName": "My PHP snapshot agent",
+  "pollIntervalMs": 800,
+  "logDirectory": "./logs",
+  "fileTransferRoot": "./transfer",
+  "maxUploadBytes": 10485760,
+  "maxTransferBytes": 10485760,
+  "allowScreenCapture": true,
+  "allowRemoteControl": true,
+  "allowKeyboardInput": true,
+  "allowFileTransfer": true,
+  "allowSessionRecording": true
+}

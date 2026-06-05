@@ -1,0 +1,14 @@
+agent/agent.config.json
+agent/agent.state.json
+agent/node_modules/
+agent/*.log
+agent/*.err
+agent/logs/
+agent/transfer/*
+!agent/transfer/.gitkeep
+git.zip
+.env
+server/.env
+server/lib/config.local.php
+storage/uploads/*
+!storage/uploads/.gitkeep
