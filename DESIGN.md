@@ -51,7 +51,17 @@ Device Snapshot Center should feel like a compact remote-operations console: cal
 - Keyboard input must be a second explicit toggle after control mode.
 - Stop and Escape are panic-off controls.
 - Fullscreen should preserve the control dock and accurate pointer mapping.
+- Pointer control uses an ordered down/move/up/cancel state machine. Move packets may be coalesced, but boundary events must never be reordered or silently discarded.
+- A transport failure must release active mouse buttons automatically.
 - Animation should be short, functional, and disabled through `prefers-reduced-motion`.
+
+## Transport System
+
+- Keep control-plane authentication and permissions in PHP/MySQL.
+- Select transports per capability instead of treating the whole session as one connection.
+- Prefer the lowest-latency available transport, retain a warm fallback, and upgrade again after recovery without restarting the agent.
+- Current baseline is adaptive HTTP long-poll with short-poll circuit-breaker fallback. Future WSS and WebRTC transports must preserve the same pointer sequence and epoch contract.
+- High-frequency pointer move commands are ephemeral and must not flood audit history or persist after successful execution.
 
 ## Mobile Rules
 

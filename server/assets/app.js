@@ -8,6 +8,8 @@
   const csrfToken = root.dataset.csrfToken;
   const defaultCaptureIntervalMs = Math.max(800, Number(root.dataset.captureInterval || 1800));
   const statusIntervalMs = Math.max(500, Number(root.dataset.statusInterval || 900));
+  const pointerBatchMs = Math.max(24, Number(root.dataset.pointerBatch || 48));
+  const pointerMaxEvents = Math.max(4, Number(root.dataset.pointerMaxEvents || 64));
   const speedIntervals = {
     eco: Math.max(1600, defaultCaptureIntervalMs + 800),
     flow: defaultCaptureIntervalMs,
@@ -29,6 +31,7 @@
   const status = root.querySelector("[data-live-status]");
   const freshness = root.querySelector("[data-live-freshness]");
   const queue = root.querySelector("[data-live-queue]");
+  const transport = root.querySelector("[data-live-transport]");
   const mode = root.querySelector("[data-live-mode]");
   const deviceSearch = document.querySelector("[data-device-search]");
   const deviceCards = Array.from(document.querySelectorAll("[data-device-card]"));
@@ -46,6 +49,16 @@
   let activeSpeed = "flow";
   let captureIntervalMs = speedIntervals.flow;
   let visibleLiveWanted = false;
+  let pointerBatchTimer = null;
+  let pointerEvents = [];
+  let pointerPackets = [];
+  let pointerSending = false;
+  let pointerState = null;
+  let pointerSequence = 0;
+  let pointerEpoch = Date.now();
+  let pointerGestureNumber = 0;
+  let pointerInputAvailable = false;
+  const pointerEventsSupported = "PointerEvent" in window;
 
   function selectedDeviceId() {
     return Number(deviceSelect?.value || 0);
@@ -93,11 +106,32 @@
     if (data?.pending_click) {
       parts.push("klik");
     }
+    if (data?.pending_pointer) {
+      parts.push("pointer");
+    }
     if (data?.pending_keyboard) {
       parts.push("keyboard");
     }
     queue.textContent = parts.length ? `Queue ${parts.join(", ")}` : "Queue clear";
     queue.dataset.state = parts.length ? "pending" : "clear";
+  }
+
+  function setTransport(data) {
+    if (!transport || !data?.transport) {
+      return;
+    }
+    const selected = String(data.transport.primary || "http-poll");
+    transport.textContent = selected === "http-long-poll" ? "Adaptive HTTP" : "HTTP polling";
+    transport.dataset.state = selected === "http-long-poll" ? "ready" : "pending";
+  }
+
+  function setCapabilities(data) {
+    pointerInputAvailable = Boolean(data?.capabilities?.pointer_input);
+    root.dataset.pointerInput = pointerInputAvailable ? "stream" : "click";
+  }
+
+  function pointerCanStream() {
+    return pointerEventsSupported && pointerInputAvailable;
   }
 
   function setFrameFreshness(frame) {
@@ -264,6 +298,8 @@
       const data = await postLive("status");
       await renderFrame(data.frame);
       setQueue(data);
+      setTransport(data);
+      setCapabilities(data);
       const lastSeen = data.device?.last_seen ? `Last seen ${data.device.last_seen}` : "Device belum terlihat";
       setStatus(lastSeen);
     } catch (error) {
@@ -284,6 +320,8 @@
       const data = await postLive("capture");
       await renderFrame(data.frame);
       setQueue(data);
+      setTransport(data);
+      setCapabilities(data);
       setStatus(data.pending_capture ? "Mengambil frame..." : "Frame diminta");
     } catch (error) {
       setMode("Error", "error");
@@ -332,6 +370,7 @@
       clearTimeout(singleClickTimer);
       singleClickTimer = null;
     }
+    cancelPointerGesture("Kontrol dihentikan");
     if (liveToggle) {
       liveToggle.checked = false;
     }
@@ -361,7 +400,7 @@
   controlToggle?.addEventListener("change", () => {
     syncControlState();
     if (controlToggle.checked) {
-      setStatus("Kontrol klik aktif");
+      setStatus(pointerCanStream() ? "Kontrol pointer dan drag aktif" : "Kontrol klik kompatibel aktif");
     }
   });
 
@@ -421,6 +460,7 @@
   document.addEventListener("fullscreenchange", updateFullscreenState);
 
   deviceSelect?.addEventListener("change", () => {
+    cancelPointerGesture("Device diganti");
     latestFrameId = null;
     renderFrame(null);
     if (liveToggle?.checked) {
@@ -476,14 +516,16 @@
     return { left, top, width, height, naturalWidth, naturalHeight };
   }
 
-  function screenPoint(event) {
+  function screenPoint(event, clampOutside = false) {
     const box = renderedImageBox();
-    const localX = event.clientX - box.left;
-    const localY = event.clientY - box.top;
+    let localX = event.clientX - box.left;
+    let localY = event.clientY - box.top;
 
-    if (localX < 0 || localY < 0 || localX > box.width || localY > box.height) {
+    if (!clampOutside && (localX < 0 || localY < 0 || localX > box.width || localY > box.height)) {
       throw new Error("Klik di luar area frame");
     }
+    localX = Math.max(0, Math.min(box.width, localX));
+    localY = Math.max(0, Math.min(box.height, localY));
 
     const x = Math.round((localX / box.width) * box.naturalWidth);
     const y = Math.round((localY / box.height) * box.naturalHeight);
@@ -492,6 +534,99 @@
       x: Math.max(0, Math.min(Math.max(0, box.naturalWidth - 1), x)),
       y: Math.max(0, Math.min(Math.max(0, box.naturalHeight - 1), y)),
     };
+  }
+
+  function pointerButton(event) {
+    return {
+      0: "left",
+      1: "middle",
+      2: "right",
+    }[event.button] || pointerState?.button || "left";
+  }
+
+  function appendPointerEvent(type, source, button = pointerState?.button || "left") {
+    const point = type === "cancel" ? {} : screenPoint(source, true);
+    pointerEvents.push({
+      type,
+      button,
+      sequence: ++pointerSequence,
+      ...point,
+    });
+  }
+
+  function schedulePointerFlush() {
+    if (pointerBatchTimer) {
+      return;
+    }
+    pointerBatchTimer = window.setTimeout(() => {
+      pointerBatchTimer = null;
+      flushPointerEvents();
+    }, pointerBatchMs);
+  }
+
+  function flushPointerEvents() {
+    if (pointerBatchTimer) {
+      clearTimeout(pointerBatchTimer);
+      pointerBatchTimer = null;
+    }
+    if (!pointerEvents.length) {
+      return;
+    }
+
+    const events = pointerEvents.splice(0, pointerMaxEvents);
+    const packet = {
+      device_id: pointerState?.deviceId || selectedDeviceId(),
+      epoch: pointerEpoch,
+      gesture_id: pointerState?.gestureId || `release-${pointerEpoch}`,
+      events,
+      moveOnly: events.every((event) => event.type === "move"),
+    };
+    const latestPacket = pointerPackets[pointerPackets.length - 1];
+    if (packet.moveOnly && latestPacket?.moveOnly) {
+      pointerPackets[pointerPackets.length - 1] = packet;
+    } else {
+      pointerPackets.push(packet);
+    }
+    drainPointerPackets();
+
+    if (pointerEvents.length) {
+      schedulePointerFlush();
+    }
+  }
+
+  async function drainPointerPackets() {
+    if (pointerSending) {
+      return;
+    }
+    pointerSending = true;
+    try {
+      while (pointerPackets.length) {
+        const packet = pointerPackets.shift();
+        const data = await postLive("pointer", packet);
+        setQueue(data);
+      }
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      pointerSending = false;
+      if (pointerPackets.length) {
+        drainPointerPackets();
+      }
+    }
+  }
+
+  function cancelPointerGesture(reason = "Kontrol pointer dihentikan") {
+    if (!pointerState && !pointerEvents.length) {
+      return;
+    }
+    pointerEvents = [];
+    pointerPackets = pointerPackets.filter((packet) => !packet.moveOnly);
+    appendPointerEvent("cancel", null, pointerState?.button || "left");
+    flushPointerEvents();
+    pointerState = null;
+    pointerEpoch = Date.now();
+    pointerSequence = 0;
+    setStatus(reason);
   }
 
   function clickName(button, double) {
@@ -609,8 +744,85 @@
       });
   }
 
+  stage?.addEventListener("pointerdown", (event) => {
+    if (!pointerCanStream() || !controlIsReady() || pointerState) {
+      return;
+    }
+    if (![0, 1, 2].includes(event.button)) {
+      return;
+    }
+
+    event.preventDefault();
+    stage.focus({ preventScroll: true });
+    const button = pointerButton(event);
+    pointerState = {
+      pointerId: event.pointerId,
+      button,
+      deviceId: selectedDeviceId(),
+      gestureId: `gesture-${pointerEpoch}-${++pointerGestureNumber}`,
+    };
+    try {
+      stage.setPointerCapture(event.pointerId);
+      appendPointerEvent("down", event, button);
+      flushPointerEvents();
+      setStatus(`Pointer ${button} aktif`);
+    } catch (error) {
+      cancelPointerGesture(error.message);
+    }
+  });
+
+  stage?.addEventListener("pointermove", (event) => {
+    if (!pointerCanStream() || !pointerState || event.pointerId !== pointerState.pointerId) {
+      return;
+    }
+
+    event.preventDefault();
+    try {
+      const samples = typeof event.getCoalescedEvents === "function"
+        ? event.getCoalescedEvents()
+        : [event];
+      const usableSamples = samples.length ? samples.slice(-16) : [event];
+      usableSamples.forEach((sample) => appendPointerEvent("move", sample, pointerState.button));
+      if (pointerEvents.length >= Math.max(4, pointerMaxEvents - 16)) {
+        flushPointerEvents();
+      } else {
+        schedulePointerFlush();
+      }
+    } catch (error) {
+      cancelPointerGesture(error.message);
+    }
+  });
+
+  function finishPointerGesture(event, type = "up") {
+    if (!pointerCanStream() || !pointerState || event.pointerId !== pointerState.pointerId) {
+      return;
+    }
+
+    event.preventDefault();
+    try {
+      appendPointerEvent(type, event, pointerState.button);
+      flushPointerEvents();
+      if (stage.hasPointerCapture(event.pointerId)) {
+        stage.releasePointerCapture(event.pointerId);
+      }
+      pointerState = null;
+      setStatus(type === "up" ? "Pointer selesai" : "Pointer dibatalkan");
+      window.setTimeout(requestFrame, 180);
+    } catch (error) {
+      cancelPointerGesture(error.message);
+    }
+  }
+
+  stage?.addEventListener("pointerup", (event) => finishPointerGesture(event, "up"));
+  stage?.addEventListener("pointercancel", (event) => finishPointerGesture(event, "cancel"));
+  stage?.addEventListener("lostpointercapture", (event) => {
+    if (pointerState && event.pointerId === pointerState.pointerId) {
+      cancelPointerGesture("Pointer capture terputus");
+    }
+  });
+
   stage?.addEventListener("click", (event) => {
-    if (!controlIsReady()) {
+    if (pointerCanStream() || !controlIsReady()) {
       return;
     }
 
@@ -631,7 +843,7 @@
   });
 
   stage?.addEventListener("dblclick", (event) => {
-    if (!controlIsReady()) {
+    if (pointerCanStream() || !controlIsReady()) {
       return;
     }
 
@@ -654,6 +866,9 @@
     }
 
     event.preventDefault();
+    if (pointerCanStream()) {
+      return;
+    }
     stage.focus({ preventScroll: true });
     if (singleClickTimer) {
       clearTimeout(singleClickTimer);
@@ -680,7 +895,10 @@
     sendRemoteKey(payload);
   });
 
-  window.addEventListener("beforeunload", stopTimers);
+  window.addEventListener("beforeunload", () => {
+    cancelPointerGesture();
+    stopTimers();
+  });
 
   controlToggle.disabled = true;
   if (keyboardToggle) {

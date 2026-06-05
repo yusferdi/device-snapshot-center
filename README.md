@@ -79,7 +79,7 @@ npm.cmd install
 node agent.js
 ```
 
-Agent akan enroll sekali, menyimpan token di `agent/agent.state.json`, lalu polling dashboard PHP sampai proses dihentikan.
+Agent akan enroll sekali, menyimpan token di `agent/agent.state.json`, lalu memilih HTTP long-poll adaptif. Jika request panjang diblokir proxy, circuit breaker otomatis turun ke short-poll dan mencoba upgrade kembali tanpa restart agent.
 
 ## Fitur Yang Ada
 
@@ -95,10 +95,13 @@ Agent akan enroll sekali, menyimpan token di `agent/agent.state.json`, lalu poll
 - Mode live speed `Eco`, `Flow`, dan `Burst` untuk mengatur ritme request frame dari dashboard.
 - Grid overlay opsional untuk membantu validasi alignment layar dan koordinat klik.
 - Klik mouse jarak jauh melalui action `mouse_click` untuk left-click, double-click, dan right-click, hanya jika `allowRemoteControl` aktif di config agent.
+- Pointer drag-and-drop melalui action `mouse_input` dengan event berurutan `down`, `move`, `up`, dan `cancel`. Move batch lama dikompaksi agar antrean tidak tertinggal.
 - Input keyboard jarak jauh melalui action `keyboard_input`, hanya jika `allowRemoteControl` dan `allowKeyboardInput` aktif di config agent.
 - File transfer dua arah melalui folder `fileTransferRoot`, hanya jika `allowFileTransfer` aktif.
 - Session recording menghasilkan artifact HTML replay dari frame screenshot, hanya jika `allowSessionRecording` aktif.
 - Tombol Stop dan tombol Escape mematikan live view serta mode kontrol klik dari dashboard.
+- Watchdog agent otomatis melepas tombol mouse yang masih tertahan ketika transport terputus atau pointer berhenti mengirim event.
+- Capability negotiation menjaga rolling upgrade: agent lama tetap menerima `mouse_click`, sedangkan agent `1.5+` otomatis memakai `mouse_input`.
 - Upload artifact disimpan di `storage/uploads/` secara default, bukan di folder public `server/`.
 
 ## Action Allowlist
@@ -111,6 +114,7 @@ Agent akan enroll sekali, menyimpan token di `agent/agent.state.json`, lalu poll
 - `run_diagnostic`: menjalankan diagnostic command hardcoded seperti `node_version`, `npm_version`, atau `git_version`.
 - `capture_screen`: ambil screenshot layar device dan upload sebagai artifact gambar.
 - `mouse_click`: klik mouse pada koordinat layar yang dikirim dari live view. Payload mendukung `button` (`left`, `right`, `middle`) dan `double`.
+- `mouse_input`: batch pointer berurutan untuk move dan drag-and-drop. Action ini bersifat ephemeral sehingga hasil sukses segera dibersihkan dan tidak memenuhi tabel command/audit.
 - `keyboard_input`: input keyboard dari live view. Payload mendukung `kind=text` untuk karakter biasa atau `kind=key` untuk tombol seperti `enter`, `backspace`, `left`, `right`, dan modifier `control`, `alt`, `shift`.
 - `file_list`: daftar isi folder transfer agent.
 - `file_pull`: ambil file dari folder transfer agent sebagai artifact dashboard.
@@ -132,3 +136,16 @@ Payload contoh untuk `run_diagnostic`:
 ## Catatan Keamanan
 
 Prototype ini sengaja tidak menyediakan arbitrary shell command atau akses file bebas. Remote mouse/keyboard/file/recording harus diaktifkan eksplisit di config agent, dibatasi permission profile device, dan tetap hanya menjalankan aksi yang ada di allowlist.
+
+## Adaptive Transport
+
+Fondasi saat ini menyediakan `http-long-poll` sebagai jalur utama dan `http-poll` sebagai fallback. Server mengirim capability transport pada setiap respons poll, sehingga nilai `.env` dapat berubah tanpa restart agent.
+
+- `APP_AGENT_LONG_POLL_MS=15000`: durasi tunggu request agent; isi `0` untuk memaksa short-poll.
+- `APP_AGENT_POLL_PROBE_MS=120`: ritme server memeriksa command selama long-poll.
+- `APP_AGENT_LONG_POLL_ALLOW_CLI_SERVER=false`: melindungi PHP built-in server yang single-worker agar dashboard lokal tidak tertahan.
+- `APP_POINTER_BATCH_MS=48`: interval browser mengelompokkan pointer move.
+- `APP_POINTER_MAX_EVENTS=64`: batas event per batch.
+- `APP_POINTER_RELEASE_TIMEOUT_MS=2500`: watchdog pelepas tombol mouse.
+
+Lapisan berikutnya dapat menambahkan WSS dan WebRTC sebagai transport lebih cepat tanpa menghapus fallback HTTP ini.

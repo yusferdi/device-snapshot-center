@@ -428,6 +428,8 @@ apply_security_headers();
                 data-csrf-token="<?= h(csrf_token()) ?>"
                 data-capture-interval="<?= (int) ($liveConfig['capture_interval_ms'] ?? 1800) ?>"
                 data-status-interval="<?= (int) ($liveConfig['status_interval_ms'] ?? 900) ?>"
+                data-pointer-batch="<?= (int) ($liveConfig['pointer_batch_ms'] ?? 48) ?>"
+                data-pointer-max-events="<?= (int) ($liveConfig['pointer_max_events'] ?? 64) ?>"
             >
                 <div class="panel-heading">
                     <div>
@@ -435,6 +437,7 @@ apply_security_headers();
                         <div class="live-metrics">
                             <span class="live-pill" data-live-freshness>Frame -</span>
                             <span class="live-pill" data-live-queue>Queue -</span>
+                            <span class="live-pill" data-live-transport>Adaptive HTTP</span>
                             <span class="live-pill" data-live-mode>Idle</span>
                         </div>
                     </div>

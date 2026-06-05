@@ -377,6 +377,22 @@ function allowed_actions(): array
     return app_config()['allowed_actions'];
 }
 
+function is_ephemeral_action(string $action): bool
+{
+    return in_array($action, ['mouse_input'], true);
+}
+
+function effective_agent_long_poll_ms(): int
+{
+    $liveConfig = app_config()['live'] ?? [];
+    $waitMs = max(0, min(25000, (int) ($liveConfig['agent_long_poll_ms'] ?? 15000)));
+    if (PHP_SAPI === 'cli-server' && empty($liveConfig['allow_cli_server_long_poll'])) {
+        return 0;
+    }
+
+    return $waitMs;
+}
+
 function permission_profiles(): array
 {
     return [
@@ -393,9 +409,9 @@ function device_action_allowed(array $device, string $action): bool
     $base = ['health_check', 'system_info', 'network_interfaces', 'list_log_files', 'upload_log_file', 'run_diagnostic', 'capture_screen'];
     $groups = [
         'view' => $base,
-        'control' => array_merge($base, ['mouse_click', 'keyboard_input', 'record_session']),
+        'control' => array_merge($base, ['mouse_click', 'mouse_input', 'keyboard_input', 'record_session']),
         'files' => array_merge($base, ['file_list', 'file_pull', 'file_put']),
-        'full' => array_merge($base, ['mouse_click', 'keyboard_input', 'file_list', 'file_pull', 'file_put', 'record_session']),
+        'full' => array_merge($base, ['mouse_click', 'mouse_input', 'keyboard_input', 'file_list', 'file_pull', 'file_put', 'record_session']),
     ];
 
     return in_array($action, $groups[$profile] ?? $groups['full'], true);
@@ -495,7 +511,9 @@ function queue_device_command(int $deviceId, string $action, ?array $payload = n
     );
     $stmt->execute([$deviceId, $action, $payloadJson]);
     $commandId = (int) db()->lastInsertId();
-    audit_event($deviceId, $commandId, 'command_created', ['action' => $action]);
+    if (!is_ephemeral_action($action)) {
+        audit_event($deviceId, $commandId, 'command_created', ['action' => $action]);
+    }
 
     return $commandId;
 }

@@ -82,6 +82,99 @@ function live_keyboard_payload(array $body): array
     ];
 }
 
+function live_pointer_payload(array $body): array
+{
+    $events = $body['events'] ?? null;
+    $maxEvents = (int) ((app_config()['live'] ?? [])['pointer_max_events'] ?? 64);
+    if (!is_array($events) || $events === [] || count($events) > $maxEvents) {
+        json_response(['ok' => false, 'error' => 'Batch pointer tidak valid'], 400);
+    }
+
+    $allowedTypes = ['move' => true, 'down' => true, 'up' => true, 'cancel' => true];
+    $allowedButtons = ['left' => true, 'right' => true, 'middle' => true];
+    $normalizedEvents = [];
+    foreach ($events as $event) {
+        if (!is_array($event)) {
+            json_response(['ok' => false, 'error' => 'Event pointer tidak valid'], 400);
+        }
+
+        $type = strtolower((string) ($event['type'] ?? ''));
+        $button = strtolower((string) ($event['button'] ?? 'left'));
+        if (!isset($allowedTypes[$type]) || !isset($allowedButtons[$button])) {
+            json_response(['ok' => false, 'error' => 'Tipe pointer tidak didukung'], 400);
+        }
+
+        $normalized = [
+            'type' => $type,
+            'button' => $button,
+            'sequence' => max(0, (int) ($event['sequence'] ?? 0)),
+        ];
+        if ($type !== 'cancel') {
+            $x = filter_var($event['x'] ?? null, FILTER_VALIDATE_INT);
+            $y = filter_var($event['y'] ?? null, FILTER_VALIDATE_INT);
+            if ($x === false || $y === false || $x < 0 || $y < 0 || $x > 20000 || $y > 20000) {
+                json_response(['ok' => false, 'error' => 'Koordinat pointer tidak valid'], 400);
+            }
+            $normalized['x'] = $x;
+            $normalized['y'] = $y;
+        }
+        $normalizedEvents[] = $normalized;
+    }
+
+    $kind = 'move';
+    foreach ($normalizedEvents as $event) {
+        if (($event['type'] ?? '') !== 'move') {
+            $kind = 'boundary';
+            break;
+        }
+    }
+
+    return [
+        'gestureId' => clean_text((string) ($body['gesture_id'] ?? ''), 80),
+        'epoch' => max(0, (int) ($body['epoch'] ?? 0)),
+        'kind' => $kind,
+        'events' => $normalizedEvents,
+        'releaseTimeoutMs' => (int) ((app_config()['live'] ?? [])['pointer_release_timeout_ms'] ?? 2500),
+    ];
+}
+
+function queue_pointer_command(int $deviceId, array $payload): int
+{
+    if (($payload['kind'] ?? '') !== 'move') {
+        return queue_device_command($deviceId, 'mouse_input', $payload);
+    }
+
+    $stmt = db()->prepare(
+        "SELECT id, payload_json
+         FROM commands
+         WHERE device_id = ? AND action = 'mouse_input' AND status = 'queued'
+         ORDER BY id DESC
+         LIMIT 5"
+    );
+    $stmt->execute([$deviceId]);
+    foreach ($stmt->fetchAll() as $queued) {
+        $existing = json_decode((string) ($queued['payload_json'] ?? ''), true);
+        if (!is_array($existing) || ($existing['kind'] ?? '') !== 'move') {
+            continue;
+        }
+
+        $update = db()->prepare(
+            "UPDATE commands SET payload_json = ?, created_at = NOW()
+             WHERE id = ? AND device_id = ? AND status = 'queued'"
+        );
+        $update->execute([
+            json_encode($payload, JSON_UNESCAPED_SLASHES),
+            (int) $queued['id'],
+            $deviceId,
+        ]);
+        if ($update->rowCount() > 0) {
+            return (int) $queued['id'];
+        }
+    }
+
+    return queue_device_command($deviceId, 'mouse_input', $payload);
+}
+
 $deviceId = (int) ($body['device_id'] ?? 0);
 $action = (string) ($body['action'] ?? 'status');
 
@@ -89,7 +182,7 @@ if ($deviceId <= 0) {
     json_response(['ok' => false, 'error' => 'device_id required'], 400);
 }
 
-$stmt = db()->prepare('SELECT id, name, hostname, platform, last_seen FROM devices WHERE id = ? LIMIT 1');
+$stmt = db()->prepare('SELECT id, name, hostname, platform, agent_version, last_seen FROM devices WHERE id = ? LIMIT 1');
 $stmt->execute([$deviceId]);
 $device = $stmt->fetch();
 if (!$device) {
@@ -137,11 +230,15 @@ if ($action === 'click') {
     ]);
 }
 
+if ($action === 'pointer') {
+    queue_pointer_command($deviceId, live_pointer_payload($body));
+}
+
 if ($action === 'key') {
     queue_device_command($deviceId, 'keyboard_input', live_keyboard_payload($body));
 }
 
-if (!in_array($action, ['status', 'capture', 'click', 'key'], true)) {
+if (!in_array($action, ['status', 'capture', 'click', 'pointer', 'key'], true)) {
     json_response(['ok' => false, 'error' => 'Action live tidak valid'], 400);
 }
 
@@ -177,6 +274,17 @@ json_response([
     ],
     'pending_capture' => has_pending_action($deviceId, 'capture_screen'),
     'pending_click' => has_pending_action($deviceId, 'mouse_click'),
+    'pending_pointer' => has_pending_action($deviceId, 'mouse_input'),
     'pending_keyboard' => has_pending_action($deviceId, 'keyboard_input'),
+    'transport' => [
+        'profile' => 'adaptive-http',
+        'primary' => effective_agent_long_poll_ms() > 0
+            ? 'http-long-poll'
+            : 'http-poll',
+        'fallback' => 'http-poll',
+    ],
+    'capabilities' => [
+        'pointer_input' => version_compare((string) ($device['agent_version'] ?? '0.0.0'), '1.5.0', '>='),
+    ],
     'frame' => $frame,
 ]);

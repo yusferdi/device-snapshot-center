@@ -608,6 +608,9 @@ label:has(> select)::after {
   background:
     linear-gradient(180deg, rgb(255 255 255 / 4%), transparent 18%),
     #0e1726;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
   transition: border-color 160ms ease, box-shadow 160ms ease;
 }
 

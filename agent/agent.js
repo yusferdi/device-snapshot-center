@@ -10,7 +10,7 @@ import robot from "robotjs";
 import screenshotDesktop from "screenshot-desktop";
 
 const execFileAsync = promisify(execFile);
-const AGENT_VERSION = "1.4.0";
+const AGENT_VERSION = "1.5.0";
 const CONFIG_PATH = path.resolve("agent.config.json");
 const EXAMPLE_CONFIG_PATH = path.resolve("agent.config.example.json");
 const STATE_PATH = path.resolve("agent.state.json");
@@ -65,12 +65,17 @@ async function loadConfig() {
   if (!configuredServerUrl || !config.enrollmentCode) {
     throw new Error("serverUrl/serverUri and enrollmentCode are required in agent.config.json.");
   }
+  const reconnectMinMs = Math.round(clampNumber(config.reconnectMinMs, 100, 60000, 250));
 
   return {
     serverUrl: String(configuredServerUrl).replace(/\/+$/, ""),
     enrollmentCode: String(config.enrollmentCode),
     deviceName: String(config.deviceName || os.hostname()),
-    pollIntervalMs: Number(config.pollIntervalMs || 5000),
+    pollIntervalMs: Math.round(clampNumber(config.pollIntervalMs, 50, 60000, 5000)),
+    longPollMs: Math.round(clampNumber(config.longPollMs, 0, 25000, 15000)),
+    requestTimeoutMs: Math.round(clampNumber(config.requestTimeoutMs, 5000, 120000, 30000)),
+    reconnectMinMs,
+    reconnectMaxMs: Math.round(clampNumber(config.reconnectMaxMs, reconnectMinMs, 120000, 10000)),
     logDirectory: path.resolve(String(config.logDirectory || "./logs")),
     fileTransferRoot: path.resolve(String(config.fileTransferRoot || "./transfer")),
     maxUploadBytes: Number(config.maxUploadBytes || 5 * 1024 * 1024),
@@ -93,7 +98,7 @@ async function loadState() {
   return state;
 }
 
-async function apiJson(config, endpoint, body, token = null) {
+async function apiJson(config, endpoint, body, token = null, options = {}) {
   const headers = {
     "Content-Type": "application/json",
   };
@@ -101,11 +106,20 @@ async function apiJson(config, endpoint, body, token = null) {
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const response = await fetch(`${config.serverUrl}${endpoint}`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body || {}),
-  });
+  const controller = new AbortController();
+  const timeoutMs = Math.max(1000, Number(options.timeoutMs || config.requestTimeoutMs || 30000));
+  const timeout = setTimeout(() => controller.abort(new Error(`Request timed out after ${timeoutMs}ms.`)), timeoutMs);
+  let response;
+  try {
+    response = await fetch(`${config.serverUrl}${endpoint}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body || {}),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 
   const text = await response.text();
   let data;
@@ -587,6 +601,139 @@ async function mouseClick(config, payload) {
   };
 }
 
+const activeMouseButtons = new Set();
+let mouseReleaseTimer = null;
+let latestMouseEpoch = -1;
+let latestMouseSequence = -1;
+
+function releaseActiveMouseButtons(reason = "release") {
+  if (mouseReleaseTimer) {
+    clearTimeout(mouseReleaseTimer);
+    mouseReleaseTimer = null;
+  }
+
+  const released = [];
+  for (const button of activeMouseButtons) {
+    try {
+      robot.mouseToggle("up", button);
+      released.push(button);
+    } catch (error) {
+      console.error(`[agent] failed to release ${button} mouse button: ${error.message}`);
+    }
+  }
+  activeMouseButtons.clear();
+  if (released.length) {
+    console.log(`[agent] mouse safety release (${reason}): ${released.join(", ")}`);
+  }
+  return released;
+}
+
+function armMouseSafetyRelease(timeoutMs) {
+  if (mouseReleaseTimer) {
+    clearTimeout(mouseReleaseTimer);
+    mouseReleaseTimer = null;
+  }
+  if (!activeMouseButtons.size) {
+    return;
+  }
+
+  mouseReleaseTimer = setTimeout(() => {
+    releaseActiveMouseButtons("watchdog timeout");
+  }, clampInteger(timeoutMs, 500, 10000, 2500));
+}
+
+async function mouseInput(config, payload) {
+  if (!config.allowRemoteControl) {
+    throw new Error("Remote mouse control is disabled in agent.config.json.");
+  }
+
+  const events = Array.isArray(payload?.events) ? payload.events : [];
+  if (!events.length || events.length > 128) {
+    throw new Error("payload.events must contain between 1 and 128 pointer events.");
+  }
+
+  const epoch = clampInteger(payload?.epoch, 0, Number.MAX_SAFE_INTEGER, 0);
+  if (epoch < latestMouseEpoch) {
+    return { ignored: events.length, reason: "stale epoch" };
+  }
+  if (epoch > latestMouseEpoch) {
+    releaseActiveMouseButtons("new pointer epoch");
+    latestMouseEpoch = epoch;
+    latestMouseSequence = -1;
+  }
+
+  const screenSize = robot.getScreenSize();
+  let processed = 0;
+  let ignored = 0;
+  try {
+    for (const event of events) {
+      const sequence = clampInteger(event?.sequence, 0, Number.MAX_SAFE_INTEGER, 0);
+      if (sequence <= latestMouseSequence) {
+        ignored += 1;
+        continue;
+      }
+
+      const type = String(event?.type || "").toLowerCase();
+      const button = ["left", "right", "middle"].includes(String(event?.button))
+        ? String(event.button)
+        : "left";
+      latestMouseSequence = sequence;
+
+      if (type === "cancel") {
+        releaseActiveMouseButtons("pointer cancel");
+        processed += 1;
+        continue;
+      }
+
+      const x = clampInteger(event?.x, 0, Math.max(0, screenSize.width - 1), -1);
+      const y = clampInteger(event?.y, 0, Math.max(0, screenSize.height - 1), -1);
+      if (x < 0 || y < 0) {
+        throw new Error("Pointer coordinates are required.");
+      }
+
+      if (type === "down") {
+        robot.moveMouse(x, y);
+        if (!activeMouseButtons.has(button)) {
+          robot.mouseToggle("down", button);
+          activeMouseButtons.add(button);
+        }
+      } else if (type === "move") {
+        const dragButton = activeMouseButtons.values().next().value;
+        if (dragButton) {
+          robot.dragMouse(x, y, dragButton);
+        } else {
+          robot.moveMouse(x, y);
+        }
+      } else if (type === "up") {
+        if (activeMouseButtons.has(button)) {
+          robot.dragMouse(x, y, button);
+          robot.mouseToggle("up", button);
+          activeMouseButtons.delete(button);
+        } else {
+          robot.moveMouse(x, y);
+        }
+      } else {
+        throw new Error(`Unsupported pointer event: ${type}`);
+      }
+      processed += 1;
+    }
+  } catch (error) {
+    releaseActiveMouseButtons("pointer error");
+    throw error;
+  }
+
+  armMouseSafetyRelease(payload?.releaseTimeoutMs);
+  return {
+    gestureId: String(payload?.gestureId || ""),
+    epoch,
+    processed,
+    ignored,
+    activeButtons: [...activeMouseButtons],
+    screenSize,
+    appliedAt: new Date().toISOString(),
+  };
+}
+
 const ROBOT_KEY_ALLOWLIST = new Set([
   ..."abcdefghijklmnopqrstuvwxyz0123456789",
   ",", ".", "/", ";", "'", "[", "]", "\\", "-", "=", "`",
@@ -773,6 +920,15 @@ async function handleCommand(config, state, command) {
       return;
     }
 
+    case "mouse_input": {
+      const result = await mouseInput(config, payload);
+      await complete(config, state, id, {
+        status: "succeeded",
+        result_json: result,
+      });
+      return;
+    }
+
     case "keyboard_input": {
       const result = await keyboardInput(config, payload);
       await complete(config, state, id, {
@@ -839,12 +995,27 @@ async function handleCommand(config, state, command) {
   }
 }
 
+let activeTransport = "";
+let longPollSuspendedUntil = 0;
+let consecutivePollErrors = 0;
+
 async function pollOnce(config, state) {
+  const requestedWaitMs = Date.now() >= longPollSuspendedUntil ? config.longPollMs : 0;
   const result = await apiJson(config, "/api/poll.php", {
     agent_version: AGENT_VERSION,
-  }, state.deviceToken);
+    wait_ms: requestedWaitMs,
+  }, state.deviceToken, {
+    timeoutMs: Math.max(config.requestTimeoutMs, requestedWaitMs + 5000),
+  });
+  const selectedTransport = String(result.transport?.selected || "http-poll");
+  if (selectedTransport !== activeTransport) {
+    activeTransport = selectedTransport;
+    console.log(`[agent] transport selected: ${activeTransport}`);
+  }
   if (!result.command) {
-    return;
+    return Number.isFinite(Number(result.poll_after_ms))
+      ? Math.max(0, Number(result.poll_after_ms))
+      : config.pollIntervalMs;
   }
 
   try {
@@ -856,6 +1027,7 @@ async function pollOnce(config, state) {
       error_text: error.stack || error.message,
     });
   }
+  return 0;
 }
 
 async function main() {
@@ -863,16 +1035,32 @@ async function main() {
   const state = await enrollIfNeeded(config, await loadState());
 
   console.log(`[agent] visible agent started for "${config.deviceName}"`);
-  console.log(`[agent] polling ${config.serverUrl} every ${config.pollIntervalMs}ms`);
+  console.log(`[agent] connecting to ${config.serverUrl}`);
+  console.log(`[agent] preferred transport=http-long-poll wait=${config.longPollMs}ms fallback=${config.pollIntervalMs}ms`);
   console.log(`[agent] logDirectory=${config.logDirectory}`);
 
+  let reconnectDelayMs = config.reconnectMinMs;
   while (true) {
     try {
-      await pollOnce(config, state);
+      const nextPollMs = await pollOnce(config, state);
+      reconnectDelayMs = config.reconnectMinMs;
+      consecutivePollErrors = 0;
+      if (nextPollMs > 0) {
+        await sleep(nextPollMs);
+      }
     } catch (error) {
       console.error(`[agent] poll error: ${error.message}`);
+      consecutivePollErrors += 1;
+      if (config.longPollMs > 0 && consecutivePollErrors >= 2 && Date.now() >= longPollSuspendedUntil) {
+        const cooldownMs = Math.min(60000, 5000 * consecutivePollErrors);
+        longPollSuspendedUntil = Date.now() + cooldownMs;
+        console.log(`[agent] circuit breaker: falling back to http-poll for ${cooldownMs}ms`);
+      }
+      activeTransport = "";
+      releaseActiveMouseButtons("transport error");
+      await sleep(reconnectDelayMs);
+      reconnectDelayMs = Math.min(config.reconnectMaxMs, Math.max(config.reconnectMinMs, reconnectDelayMs * 2));
     }
-    await sleep(config.pollIntervalMs);
   }
 }
 

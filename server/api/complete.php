@@ -32,13 +32,18 @@ if ($stmt->rowCount() < 1) {
     json_response(['ok' => false, 'error' => 'Task not found or already completed'], 404);
 }
 
+$stmt = db()->prepare('SELECT action FROM commands WHERE id = ? AND device_id = ? LIMIT 1');
+$stmt->execute([$commandId, (int) $device['id']]);
+$completedCommand = $stmt->fetch();
+if ($status === 'succeeded' && is_ephemeral_action((string) ($completedCommand['action'] ?? ''))) {
+    db()->prepare('DELETE FROM commands WHERE id = ? AND device_id = ?')->execute([$commandId, (int) $device['id']]);
+    json_response(['ok' => true]);
+}
+
 audit_event((int) $device['id'], $commandId, 'command_completed', [
     'status' => $status,
 ]);
 
-$stmt = db()->prepare('SELECT action FROM commands WHERE id = ? AND device_id = ? LIMIT 1');
-$stmt->execute([$commandId, (int) $device['id']]);
-$completedCommand = $stmt->fetch();
 if ($status === 'succeeded' && ($completedCommand['action'] ?? '') === 'capture_screen') {
     $deleted = prune_screen_captures((int) $device['id']);
     if ($deleted > 0) {
