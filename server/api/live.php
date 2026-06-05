@@ -205,7 +205,7 @@ if ($deviceId <= 0) {
     json_response(['ok' => false, 'error' => 'device_id required'], 400);
 }
 
-$stmt = db()->prepare('SELECT id, name, hostname, platform, agent_version, transport_mode, last_seen FROM devices WHERE id = ? LIMIT 1');
+$stmt = db()->prepare('SELECT id, name, hostname, platform, agent_version, transport_mode, transport_selected, last_seen FROM devices WHERE id = ? LIMIT 1');
 $stmt->execute([$deviceId]);
 $device = $stmt->fetch();
 if (!$device) {
@@ -273,7 +273,7 @@ if ($action === 'key') {
 }
 
 if ($action === 'transport') {
-    $transportMode = strtolower((string) ($body['mode'] ?? 'auto'));
+    $transportMode = strtolower((string) ($body['mode'] ?? 'poll'));
     if (!array_key_exists($transportMode, transport_modes())) {
         json_response(['ok' => false, 'error' => 'Metode koneksi tidak valid'], 400);
     }
@@ -322,14 +322,12 @@ json_response([
     'pending_keyboard_state' => has_pending_action($deviceId, 'keyboard_state'),
     'transport' => [
         'profile' => 'adaptive-http',
-        'requested' => (string) ($device['transport_mode'] ?? 'auto'),
-        'primary' => effective_agent_long_poll_ms((string) ($device['transport_mode'] ?? 'auto')) > 0
-            ? 'http-long-poll'
-            : 'http-poll',
+        'requested' => (string) ($device['transport_mode'] ?? 'poll'),
+        'primary' => (string) ($device['transport_selected'] ?? 'http-poll'),
         'fallback' => 'http-poll',
         'available' => effective_agent_long_poll_ms('long-poll') > 0
-            ? ['auto', 'long-poll', 'poll']
-            : ['auto', 'poll'],
+            ? ['poll', 'long-poll', 'auto']
+            : ['poll', 'auto'],
     ],
     'capabilities' => [
         'pointer_input' => version_compare((string) ($device['agent_version'] ?? '0.0.0'), '1.5.0', '>='),

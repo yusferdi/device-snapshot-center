@@ -185,7 +185,8 @@ function ensure_runtime_schema(): void
         'favorite' => "ALTER TABLE devices ADD COLUMN favorite TINYINT(1) NOT NULL DEFAULT 0 AFTER last_seen",
         'tags' => "ALTER TABLE devices ADD COLUMN tags VARCHAR(255) NOT NULL DEFAULT '' AFTER favorite",
         'permission_profile' => "ALTER TABLE devices ADD COLUMN permission_profile VARCHAR(32) NOT NULL DEFAULT 'full' AFTER tags",
-        'transport_mode' => "ALTER TABLE devices ADD COLUMN transport_mode VARCHAR(32) NOT NULL DEFAULT 'auto' AFTER permission_profile",
+        'transport_mode' => "ALTER TABLE devices ADD COLUMN transport_mode VARCHAR(32) NOT NULL DEFAULT 'poll' AFTER permission_profile",
+        'transport_selected' => "ALTER TABLE devices ADD COLUMN transport_selected VARCHAR(32) NOT NULL DEFAULT 'http-poll' AFTER transport_mode",
     ];
 
     foreach ($updates as $column => $sql) {
@@ -386,13 +387,13 @@ function is_ephemeral_action(string $action): bool
 function transport_modes(): array
 {
     return [
-        'auto' => 'Auto',
-        'long-poll' => 'Long poll',
         'poll' => 'Polling',
+        'long-poll' => 'Long poll',
+        'auto' => 'Auto',
     ];
 }
 
-function effective_agent_long_poll_ms(string $mode = 'auto'): int
+function effective_agent_long_poll_ms(string $mode = 'poll'): int
 {
     if ($mode === 'poll') {
         return 0;

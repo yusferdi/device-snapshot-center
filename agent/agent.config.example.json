@@ -3,6 +3,7 @@
   "enrollmentCode": "change-me-locally",
   "deviceName": "My PHP snapshot agent",
   "pollIntervalMs": 800,
+  "initialTransportMode": "poll",
   "longPollMs": 15000,
   "requestTimeoutMs": 30000,
   "reconnectMinMs": 250,

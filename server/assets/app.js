@@ -142,7 +142,7 @@
     if (!transport || !data?.transport) {
       return;
     }
-    const requested = String(data.transport.requested || "auto");
+    const requested = String(data.transport.requested || "poll");
     const selected = String(data.transport.primary || "http-poll");
     const selectedLabel = selected === "http-long-poll" ? "Long poll" : "Polling";
     transport.textContent = requested === "auto" ? `Auto · ${selectedLabel}` : selectedLabel;
@@ -503,10 +503,10 @@
   });
   transportSelect?.addEventListener("change", async () => {
     try {
-      const data = await postLive("transport", { mode: transportSelect.value || "auto" });
+      const data = await postLive("transport", { mode: transportSelect.value || "poll" });
       setTransport(data);
       if (deviceSelect?.selectedOptions[0]) {
-        deviceSelect.selectedOptions[0].dataset.transportMode = transportSelect.value || "auto";
+        deviceSelect.selectedOptions[0].dataset.transportMode = transportSelect.value || "poll";
       }
       setStatus(`Metode koneksi: ${transportSelect.options[transportSelect.selectedIndex]?.text || transportSelect.value}`);
     } catch (error) {
@@ -522,7 +522,7 @@
     latestFrameId = null;
     renderFrame(null);
     if (transportSelect) {
-      transportSelect.value = deviceSelect.selectedOptions[0]?.dataset.transportMode || "auto";
+      transportSelect.value = deviceSelect.selectedOptions[0]?.dataset.transportMode || "poll";
     }
     if (liveToggle?.checked) {
       startLive();
@@ -1150,7 +1150,7 @@
   root.dataset.fullscreen = "off";
   root.dataset.grid = "off";
   if (transportSelect) {
-    transportSelect.value = deviceSelect?.selectedOptions[0]?.dataset.transportMode || "auto";
+    transportSelect.value = deviceSelect?.selectedOptions[0]?.dataset.transportMode || "poll";
   }
   updateSwitchAria();
   updateSpeedButtons();

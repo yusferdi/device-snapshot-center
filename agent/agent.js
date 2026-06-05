@@ -10,7 +10,7 @@ import robot from "robotjs";
 import screenshotDesktop from "screenshot-desktop";
 
 const execFileAsync = promisify(execFile);
-const AGENT_VERSION = "1.6.0";
+const AGENT_VERSION = "1.6.1";
 const CONFIG_PATH = path.resolve("agent.config.json");
 const EXAMPLE_CONFIG_PATH = path.resolve("agent.config.example.json");
 const STATE_PATH = path.resolve("agent.state.json");
@@ -66,6 +66,9 @@ async function loadConfig() {
     throw new Error("serverUrl/serverUri and enrollmentCode are required in agent.config.json.");
   }
   const reconnectMinMs = Math.round(clampNumber(config.reconnectMinMs, 100, 60000, 250));
+  const initialTransportMode = ["poll", "long-poll", "auto"].includes(String(config.initialTransportMode))
+    ? String(config.initialTransportMode)
+    : "poll";
 
   return {
     serverUrl: String(configuredServerUrl).replace(/\/+$/, ""),
@@ -73,6 +76,7 @@ async function loadConfig() {
     deviceName: String(config.deviceName || os.hostname()),
     pollIntervalMs: Math.round(clampNumber(config.pollIntervalMs, 50, 60000, 5000)),
     longPollMs: Math.round(clampNumber(config.longPollMs, 0, 25000, 15000)),
+    initialTransportMode,
     requestTimeoutMs: Math.round(clampNumber(config.requestTimeoutMs, 5000, 120000, 30000)),
     reconnectMinMs,
     reconnectMaxMs: Math.round(clampNumber(config.reconnectMaxMs, reconnectMinMs, 120000, 10000)),
@@ -1110,9 +1114,12 @@ async function executeCommand(config, state, command) {
 let activeTransport = "";
 let longPollSuspendedUntil = 0;
 let consecutivePollErrors = 0;
+let preferredTransportMode = "poll";
 
 async function pollOnce(config, state) {
-  const requestedWaitMs = Date.now() >= longPollSuspendedUntil ? config.longPollMs : 0;
+  const requestedWaitMs = preferredTransportMode === "long-poll" && Date.now() >= longPollSuspendedUntil
+    ? config.longPollMs
+    : 0;
   const result = await apiJson(config, "/api/poll.php", {
     agent_version: AGENT_VERSION,
     wait_ms: requestedWaitMs,
@@ -1120,6 +1127,14 @@ async function pollOnce(config, state) {
     timeoutMs: Math.max(config.requestTimeoutMs, requestedWaitMs + 5000),
   });
   const selectedTransport = String(result.transport?.selected || "http-poll");
+  const serverPreference = String(result.transport?.requested || "auto");
+  if (serverPreference === "poll" && preferredTransportMode !== "poll") {
+    preferredTransportMode = "poll";
+    console.log("[agent] web requested transport: http-poll");
+  } else if (serverPreference === "long-poll" && preferredTransportMode !== "long-poll") {
+    preferredTransportMode = "long-poll";
+    console.log("[agent] web requested transport: http-long-poll");
+  }
   if (selectedTransport !== activeTransport) {
     activeTransport = selectedTransport;
     console.log(`[agent] transport selected: ${activeTransport}`);
@@ -1151,12 +1166,13 @@ async function pollOnce(config, state) {
 async function main() {
   const config = await loadConfig();
   const state = await enrollIfNeeded(config, await loadState());
+  preferredTransportMode = config.initialTransportMode === "long-poll" ? "long-poll" : "poll";
   robot.setMouseDelay(0);
   robot.setKeyboardDelay(0);
 
   console.log(`[agent] visible agent v${AGENT_VERSION} started for "${config.deviceName}"`);
   console.log(`[agent] connecting to ${config.serverUrl}`);
-  console.log(`[agent] preferred transport=http-long-poll wait=${config.longPollMs}ms fallback=${config.pollIntervalMs}ms`);
+  console.log(`[agent] initial transport=${preferredTransportMode === "long-poll" ? "http-long-poll" : "http-poll"} long-poll-capability=${config.longPollMs}ms fallback=${config.pollIntervalMs}ms`);
   console.log(`[agent] logDirectory=${config.logDirectory}`);
 
   let reconnectDelayMs = config.reconnectMinMs;

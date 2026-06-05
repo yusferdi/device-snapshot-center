@@ -12,9 +12,9 @@ $pdo = db();
 $liveConfig = app_config()['live'] ?? [];
 
 $agentVersion = clean_text((string) ($body['agent_version'] ?? ''), 40);
-$transportMode = (string) ($device['transport_mode'] ?? 'auto');
+$transportMode = (string) ($device['transport_mode'] ?? 'poll');
 if (!array_key_exists($transportMode, transport_modes())) {
-    $transportMode = 'auto';
+    $transportMode = 'poll';
 }
 $serverLongPollMs = effective_agent_long_poll_ms($transportMode);
 $requestedWaitMs = max(0, min(25000, (int) ($body['wait_ms'] ?? $serverLongPollMs)));
@@ -91,7 +91,7 @@ do {
 
     $modeStmt = $pdo->prepare('SELECT transport_mode FROM devices WHERE id = ? LIMIT 1');
     $modeStmt->execute([(int) $device['id']]);
-    $latestTransportMode = (string) ($modeStmt->fetchColumn() ?: 'auto');
+    $latestTransportMode = (string) ($modeStmt->fetchColumn() ?: 'poll');
     if (array_key_exists($latestTransportMode, transport_modes())) {
         $transportMode = $latestTransportMode;
     }
@@ -108,7 +108,7 @@ $transport = [
     'requested' => $transportMode,
     'selected' => $waitMs > 0 ? 'http-long-poll' : 'http-poll',
     'available' => effective_agent_long_poll_ms('long-poll') > 0
-        ? ['http-long-poll', 'http-poll']
+        ? ['http-poll', 'http-long-poll']
         : ['http-poll'],
     'wait_ms' => $waitMs,
     'probe_ms' => $probeMs,
@@ -116,6 +116,8 @@ $transport = [
     'pointer_max_events' => (int) ($liveConfig['pointer_max_events'] ?? 64),
     'pointer_release_timeout_ms' => (int) ($liveConfig['pointer_release_timeout_ms'] ?? 2500),
 ];
+$pdo->prepare('UPDATE devices SET transport_selected = ? WHERE id = ?')
+    ->execute([$transport['selected'], (int) $device['id']]);
 
 if (!$command) {
     json_response([

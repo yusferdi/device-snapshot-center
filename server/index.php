@@ -455,7 +455,7 @@ apply_security_headers();
                                     <?php foreach ($devices as $device): ?>
                                         <option
                                             value="<?= (int) $device['id'] ?>"
-                                            data-transport-mode="<?= h((string) ($device['transport_mode'] ?? 'auto')) ?>"
+                                            data-transport-mode="<?= h((string) ($device['transport_mode'] ?? 'poll')) ?>"
                                         >
                                             <?= h($device['name']) ?>
                                         </option>

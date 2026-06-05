@@ -63,6 +63,7 @@ Copy-Item agent\agent.config.example.json agent\agent.config.json
 2. Edit `agent/agent.config.json`:
 
 - `serverUri`: `https://lppsp.ui.ac.id/any/server` (`serverUrl` masih diterima sebagai alias lama)
+- `initialTransportMode`: metode awal agent, default `poll`; dashboard dapat menggantinya tanpa restart.
 - `enrollmentCode`: samakan dengan `APP_ENROLLMENT_CODE` di `.env`
 - `deviceName`: nama yang muncul di dashboard
 - `logDirectory`: folder log yang boleh dibaca agent
@@ -95,7 +96,7 @@ Agent akan enroll sekali, menyimpan token di `agent/agent.state.json`, lalu memi
 - Mode live speed `Eco`, `Flow`, dan `Burst` untuk mengatur ritme request frame dari dashboard.
 - Profil speed benar-benar berbeda: `Eco` menghemat request, `Flow` seimbang, dan `Burst` mengutamakan frame serta input paling cepat.
 - Capture layar dan session recording berjalan di background agent agar polling mouse/keyboard tidak berhenti selama frame diambil atau di-upload.
-- Metode koneksi dapat dipilih per-device dari dashboard: `Auto`, `Long poll`, atau `Polling`, tanpa restart agent.
+- Metode koneksi dapat dipilih per-device dari dashboard: `Polling`, `Long poll`, atau `Auto`, tanpa restart agent. Agent mulai dengan `Polling`.
 - Grid overlay opsional untuk membantu validasi alignment layar dan koordinat klik.
 - Klik mouse jarak jauh melalui action `mouse_click` untuk left-click, double-click, dan right-click, hanya jika `allowRemoteControl` aktif di config agent.
 - Pointer drag-and-drop melalui action `mouse_input` dengan event berurutan `down`, `move`, `up`, dan `cancel`. Move batch lama dikompaksi agar antrean tidak tertinggal.
@@ -147,9 +148,9 @@ Prototype ini sengaja tidak menyediakan arbitrary shell command atau akses file 
 
 ## Adaptive Transport
 
-Fondasi saat ini menyediakan `http-long-poll` sebagai jalur utama dan `http-poll` sebagai fallback. Server mengirim capability transport pada setiap respons poll, sehingga nilai `.env` dapat berubah tanpa restart agent.
+Fondasi saat ini memulai agent melalui `http-poll`, dengan `http-long-poll` tersedia sebagai metode yang dapat dipilih dari dashboard. Server mengirim preferensi transport pada setiap respons poll, sehingga metode dapat berubah tanpa restart agent.
 
-Dashboard menyimpan `transport_mode` per device. Pilihan `Long poll` akan tetap jatuh ke `Polling` jika runtime server tidak mendukung request panjang; indikator dashboard menampilkan metode efektifnya.
+Dashboard menyimpan `transport_mode` per device dan metode efektif terakhir. `Polling` adalah default. Pilihan `Long poll` akan tetap jatuh ke `Polling` jika runtime server tidak mendukung request panjang; `Auto` mempertahankan metode stabil saat ini dan circuit breaker agent tetap dapat fallback ke polling.
 
 - `APP_AGENT_LONG_POLL_MS=15000`: durasi tunggu request agent; isi `0` untuk memaksa short-poll.
 - `APP_AGENT_POLL_PROBE_MS=120`: ritme server memeriksa command selama long-poll.
