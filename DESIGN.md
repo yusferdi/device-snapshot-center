@@ -1,3 +1,31 @@
+---
+name: Device Snapshot Center
+version: 1.1
+tokens:
+  color:
+    canvas: "#f6f7f9"
+    surface: "#ffffff"
+    border: "#e1e5ea"
+    text: "#18212c"
+    muted: "#667180"
+    live: "#0f6b78"
+    attention: "#a66a13"
+    optional: "#59469b"
+    danger: "#b42318"
+  radius:
+    control: 6px
+    panel: 8px
+  spacing:
+    compact: 8px
+    standard: 14px
+    section: 18px
+  shadow:
+    panel: "0 1px 2px rgb(24 33 44 / 5%)"
+  breakpoint:
+    mobile: 680px
+    tablet: 820px
+---
+
 # Device Snapshot Center Design Contract
 
 ## Product Feel
@@ -9,9 +37,11 @@ Device Snapshot Center should feel like a compact remote-operations console: cal
 - Use a balanced triadic palette: teal for primary/live, amber for attention, violet for optional modes, red only for remote-control danger states.
 - Avoid native-looking controls. Keep semantic HTML, then style switches, selects, segmented controls, and buttons with custom CSS.
 - Use dense but readable dashboard spacing. Cards are only for real panels and repeated records.
+- Prefer one framed work surface with internal dividers over many nested cards.
 - Live screen is the product center. It should feel stable, framed, and operational on desktop and mobile.
 - Keep the live stage tall enough to inspect the remote screen, but not so tall that workspace tabs fall completely out of the first desktop viewport.
 - Group toolbar actions into visible clusters such as device, speed, access, and view. Avoid a long undifferentiated row of buttons.
+- On desktop, place session controls in a restrained side rail beside the screen. On tablet and mobile, place the screen first and controls below it.
 - Use icon-only buttons with accessible labels and hover tooltips for compact view actions such as refresh frame, grid, fullscreen, and stop.
 - Use progressive disclosure for secondary workflows. Address book, file transfer, assist tools, history, and audit should live behind clear workspace tabs instead of competing with the live screen.
 
