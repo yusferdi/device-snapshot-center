@@ -7,16 +7,29 @@
   const apiUrl = root.dataset.liveApi;
   const csrfToken = root.dataset.csrfToken;
   const defaultCaptureIntervalMs = Math.max(800, Number(root.dataset.captureInterval || 1800));
-  const statusIntervalMs = Math.max(500, Number(root.dataset.statusInterval || 900));
-  const pointerBatchMs = Math.max(24, Number(root.dataset.pointerBatch || 48));
+  const defaultStatusIntervalMs = Math.max(500, Number(root.dataset.statusInterval || 900));
+  const defaultPointerBatchMs = Math.max(24, Number(root.dataset.pointerBatch || 48));
   const pointerMaxEvents = Math.max(4, Number(root.dataset.pointerMaxEvents || 64));
-  const speedIntervals = {
-    eco: Math.max(1600, defaultCaptureIntervalMs + 800),
-    flow: defaultCaptureIntervalMs,
-    burst: Math.max(800, defaultCaptureIntervalMs - 700),
+  const speedProfiles = {
+    eco: {
+      capture: Math.max(3500, defaultCaptureIntervalMs + 2000),
+      status: Math.max(1800, defaultStatusIntervalMs + 1000),
+      pointer: Math.max(96, defaultPointerBatchMs * 2),
+    },
+    flow: {
+      capture: defaultCaptureIntervalMs,
+      status: defaultStatusIntervalMs,
+      pointer: defaultPointerBatchMs,
+    },
+    burst: {
+      capture: Math.max(350, Math.min(650, Math.round(defaultCaptureIntervalMs / 3))),
+      status: Math.max(350, Math.min(500, Math.round(defaultStatusIntervalMs / 2))),
+      pointer: 24,
+    },
   };
 
   const deviceSelect = root.querySelector("[data-live-device]");
+  const transportSelect = root.querySelector("[data-live-transport-select]");
   const liveToggle = root.querySelector("[data-live-toggle]");
   const controlToggle = root.querySelector("[data-control-toggle]");
   const keyboardToggle = root.querySelector("[data-keyboard-toggle]");
@@ -47,9 +60,12 @@
   let singleClickTimer = null;
   let keyChain = Promise.resolve();
   let activeSpeed = "flow";
-  let captureIntervalMs = speedIntervals.flow;
+  let captureIntervalMs = speedProfiles.flow.capture;
+  let statusIntervalMs = speedProfiles.flow.status;
+  let pointerBatchMs = speedProfiles.flow.pointer;
   let visibleLiveWanted = false;
   let pointerBatchTimer = null;
+  let pointerKeepaliveTimer = null;
   let pointerEvents = [];
   let pointerPackets = [];
   let pointerSending = false;
@@ -58,6 +74,9 @@
   let pointerEpoch = Date.now();
   let pointerGestureNumber = 0;
   let pointerInputAvailable = false;
+  let keyboardStateAvailable = false;
+  let wheelInputAvailable = false;
+  const remoteKeysDown = new Set();
   const pointerEventsSupported = "PointerEvent" in window;
 
   function selectedDeviceId() {
@@ -112,6 +131,9 @@
     if (data?.pending_keyboard) {
       parts.push("keyboard");
     }
+    if (data?.pending_keyboard_state) {
+      parts.push("keys");
+    }
     queue.textContent = parts.length ? `Queue ${parts.join(", ")}` : "Queue clear";
     queue.dataset.state = parts.length ? "pending" : "clear";
   }
@@ -120,14 +142,23 @@
     if (!transport || !data?.transport) {
       return;
     }
+    const requested = String(data.transport.requested || "auto");
     const selected = String(data.transport.primary || "http-poll");
-    transport.textContent = selected === "http-long-poll" ? "Adaptive HTTP" : "HTTP polling";
-    transport.dataset.state = selected === "http-long-poll" ? "ready" : "pending";
+    const selectedLabel = selected === "http-long-poll" ? "Long poll" : "Polling";
+    transport.textContent = requested === "auto" ? `Auto · ${selectedLabel}` : selectedLabel;
+    transport.dataset.state = requested === "long-poll" && selected !== "http-long-poll" ? "pending" : "ready";
+    if (transportSelect && transportSelect.value !== requested) {
+      transportSelect.value = requested;
+    }
   }
 
   function setCapabilities(data) {
     pointerInputAvailable = Boolean(data?.capabilities?.pointer_input);
+    keyboardStateAvailable = Boolean(data?.capabilities?.keyboard_state);
+    wheelInputAvailable = Boolean(data?.capabilities?.wheel_input);
     root.dataset.pointerInput = pointerInputAvailable ? "stream" : "click";
+    root.dataset.keyboardInput = keyboardStateAvailable ? "state" : "tap";
+    root.dataset.wheelInput = wheelInputAvailable ? "on" : "off";
   }
 
   function pointerCanStream() {
@@ -189,14 +220,16 @@
   }
 
   function setLiveSpeed(speed) {
-    if (!Object.prototype.hasOwnProperty.call(speedIntervals, speed)) {
+    if (!Object.prototype.hasOwnProperty.call(speedProfiles, speed)) {
       return;
     }
 
     activeSpeed = speed;
-    captureIntervalMs = speedIntervals[speed];
+    captureIntervalMs = speedProfiles[speed].capture;
+    statusIntervalMs = speedProfiles[speed].status;
+    pointerBatchMs = speedProfiles[speed].pointer;
     updateSpeedButtons();
-    setStatus(`Mode ${speed}`);
+    setStatus(`${speed[0].toUpperCase()}${speed.slice(1)} · frame ${captureIntervalMs}ms · input ${pointerBatchMs}ms`);
 
     if (liveToggle?.checked && !document.hidden) {
       startLive();
@@ -250,6 +283,8 @@
       screen.dataset.frameId = "";
       screen.dataset.naturalWidth = "";
       screen.dataset.naturalHeight = "";
+      screen.dataset.controlWidth = "";
+      screen.dataset.controlHeight = "";
       controlToggle.checked = false;
       controlToggle.disabled = true;
       syncControlState();
@@ -270,6 +305,8 @@
       screen.dataset.frameId = String(frame.id);
       screen.dataset.naturalWidth = String(loadedImage.naturalWidth || "");
       screen.dataset.naturalHeight = String(loadedImage.naturalHeight || "");
+      screen.dataset.controlWidth = String(frame.screen?.controlScreenSize?.width || loadedImage.naturalWidth || "");
+      screen.dataset.controlHeight = String(frame.screen?.controlScreenSize?.height || loadedImage.naturalHeight || "");
       if (loadedImage.naturalWidth && loadedImage.naturalHeight) {
         root.style.setProperty("--screen-aspect", `${loadedImage.naturalWidth} / ${loadedImage.naturalHeight}`);
       }
@@ -317,7 +354,7 @@
 
     captureInFlight = true;
     try {
-      const data = await postLive("capture");
+      const data = await postLive("capture", { profile: activeSpeed });
       await renderFrame(data.frame);
       setQueue(data);
       setTransport(data);
@@ -371,6 +408,7 @@
       singleClickTimer = null;
     }
     cancelPointerGesture("Kontrol dihentikan");
+    releaseRemoteKeys("Kontrol dihentikan");
     if (liveToggle) {
       liveToggle.checked = false;
     }
@@ -398,6 +436,10 @@
   });
 
   controlToggle?.addEventListener("change", () => {
+    if (!controlToggle.checked) {
+      cancelPointerGesture("Kontrol mouse nonaktif");
+      releaseRemoteKeys("Kontrol keyboard nonaktif");
+    }
     syncControlState();
     if (controlToggle.checked) {
       setStatus(pointerCanStream() ? "Kontrol pointer dan drag aktif" : "Kontrol klik kompatibel aktif");
@@ -405,6 +447,9 @@
   });
 
   keyboardToggle?.addEventListener("change", () => {
+    if (!keyboardToggle.checked) {
+      releaseRemoteKeys("Keyboard nonaktif");
+    }
     syncControlState();
     if (keyboardToggle.checked) {
       stage?.focus({ preventScroll: true });
@@ -456,6 +501,19 @@
   speedButtons.forEach((button) => {
     button.addEventListener("click", () => setLiveSpeed(button.dataset.liveSpeed || "flow"));
   });
+  transportSelect?.addEventListener("change", async () => {
+    try {
+      const data = await postLive("transport", { mode: transportSelect.value || "auto" });
+      setTransport(data);
+      if (deviceSelect?.selectedOptions[0]) {
+        deviceSelect.selectedOptions[0].dataset.transportMode = transportSelect.value || "auto";
+      }
+      setStatus(`Metode koneksi: ${transportSelect.options[transportSelect.selectedIndex]?.text || transportSelect.value}`);
+    } catch (error) {
+      setStatus(error.message);
+      refreshStatus();
+    }
+  });
   stopButton?.addEventListener("click", panicOff);
   document.addEventListener("fullscreenchange", updateFullscreenState);
 
@@ -463,6 +521,9 @@
     cancelPointerGesture("Device diganti");
     latestFrameId = null;
     renderFrame(null);
+    if (transportSelect) {
+      transportSelect.value = deviceSelect.selectedOptions[0]?.dataset.transportMode || "auto";
+    }
     if (liveToggle?.checked) {
       startLive();
     } else {
@@ -485,10 +546,12 @@
   });
 
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
+    if (event.key === "Escape" && ((event.ctrlKey && event.altKey) || !keyboardIsReady())) {
+      event.preventDefault();
+      event.stopPropagation();
       panicOff();
     }
-  });
+  }, true);
 
   function renderedImageBox() {
     const rect = screen.getBoundingClientRect();
@@ -498,6 +561,8 @@
 
     const naturalWidth = screen.naturalWidth || Number(screen.dataset.naturalWidth) || rect.width;
     const naturalHeight = screen.naturalHeight || Number(screen.dataset.naturalHeight) || rect.height;
+    const controlWidth = Number(screen.dataset.controlWidth) || naturalWidth;
+    const controlHeight = Number(screen.dataset.controlHeight) || naturalHeight;
     const naturalRatio = naturalWidth / naturalHeight;
     const rectRatio = rect.width / rect.height;
     let width = rect.width;
@@ -513,7 +578,7 @@
       top = rect.top + ((rect.height - height) / 2);
     }
 
-    return { left, top, width, height, naturalWidth, naturalHeight };
+    return { left, top, width, height, naturalWidth, naturalHeight, controlWidth, controlHeight };
   }
 
   function screenPoint(event, clampOutside = false) {
@@ -527,12 +592,12 @@
     localX = Math.max(0, Math.min(box.width, localX));
     localY = Math.max(0, Math.min(box.height, localY));
 
-    const x = Math.round((localX / box.width) * box.naturalWidth);
-    const y = Math.round((localY / box.height) * box.naturalHeight);
+    const x = Math.round((localX / box.width) * box.controlWidth);
+    const y = Math.round((localY / box.height) * box.controlHeight);
 
     return {
-      x: Math.max(0, Math.min(Math.max(0, box.naturalWidth - 1), x)),
-      y: Math.max(0, Math.min(Math.max(0, box.naturalHeight - 1), y)),
+      x: Math.max(0, Math.min(Math.max(0, box.controlWidth - 1), x)),
+      y: Math.max(0, Math.min(Math.max(0, box.controlHeight - 1), y)),
     };
   }
 
@@ -545,13 +610,39 @@
   }
 
   function appendPointerEvent(type, source, button = pointerState?.button || "left") {
-    const point = type === "cancel" ? {} : screenPoint(source, true);
+    const point = ["cancel", "wheel"].includes(type) ? {} : screenPoint(source, true);
+    if (pointerState && Object.prototype.hasOwnProperty.call(point, "x")) {
+      pointerState.lastPoint = point;
+    }
     pointerEvents.push({
       type,
       button,
       sequence: ++pointerSequence,
       ...point,
     });
+  }
+
+  function stopPointerKeepalive() {
+    if (pointerKeepaliveTimer) {
+      clearInterval(pointerKeepaliveTimer);
+      pointerKeepaliveTimer = null;
+    }
+  }
+
+  function startPointerKeepalive() {
+    stopPointerKeepalive();
+    pointerKeepaliveTimer = window.setInterval(() => {
+      if (!pointerState?.lastPoint || !pointerCanStream() || !controlIsReady()) {
+        return;
+      }
+      pointerEvents.push({
+        type: "move",
+        button: pointerState.button,
+        sequence: ++pointerSequence,
+        ...pointerState.lastPoint,
+      });
+      flushPointerEvents();
+    }, 1000);
   }
 
   function schedulePointerFlush() {
@@ -616,6 +707,7 @@
   }
 
   function cancelPointerGesture(reason = "Kontrol pointer dihentikan") {
+    stopPointerKeepalive();
     if (!pointerState && !pointerEvents.length) {
       return;
     }
@@ -675,6 +767,39 @@
     PageDown: "pagedown",
     Insert: "insert",
     CapsLock: "capslock",
+    PrintScreen: "printscreen",
+    ContextMenu: "menu",
+    Escape: "escape",
+    Control: "control",
+    Alt: "alt",
+    Shift: "shift",
+    Meta: "command",
+    AudioVolumeMute: "audio_mute",
+    AudioVolumeDown: "audio_vol_down",
+    AudioVolumeUp: "audio_vol_up",
+    MediaPlayPause: "audio_play",
+    MediaStop: "audio_stop",
+    MediaTrackPrevious: "audio_prev",
+    MediaTrackNext: "audio_next",
+  };
+  const codeNameMap = {
+    Backquote: "`",
+    Minus: "-",
+    Equal: "=",
+    BracketLeft: "[",
+    BracketRight: "]",
+    Backslash: "\\",
+    Semicolon: ";",
+    Quote: "'",
+    Comma: ",",
+    Period: ".",
+    Slash: "/",
+    NumpadAdd: "numpad_+",
+    NumpadSubtract: "numpad_-",
+    NumpadMultiply: "numpad_*",
+    NumpadDivide: "numpad_/",
+    NumpadDecimal: "numpad_.",
+    NumLock: "numpad_lock",
   };
 
   function keyboardModifiers(event) {
@@ -692,7 +817,7 @@
   }
 
   function keyboardPayload(event) {
-    if (event.repeat || event.metaKey || event.key === "Escape" || event.key === "Dead" || event.key === "Unidentified") {
+    if (event.metaKey || event.key === "Dead" || event.key === "Unidentified") {
       return null;
     }
 
@@ -732,6 +857,38 @@
     };
   }
 
+  function keyboardStateKey(event) {
+    if (event.key === "Dead" || event.key === "Unidentified") {
+      return null;
+    }
+    if (keyNameMap[event.key]) {
+      return keyNameMap[event.key];
+    }
+    if (/^Key[A-Z]$/.test(event.code)) {
+      return event.code.slice(-1).toLowerCase();
+    }
+    if (/^Digit[0-9]$/.test(event.code)) {
+      return event.code.slice(-1);
+    }
+    if (/^Numpad[0-9]$/.test(event.code)) {
+      return `numpad_${event.code.slice(-1)}`;
+    }
+    if (codeNameMap[event.code]) {
+      return codeNameMap[event.code];
+    }
+    const functionMatch = /^F([1-9]|1[0-9]|2[0-4])$/.exec(event.key);
+    if (functionMatch) {
+      return event.key.toLowerCase();
+    }
+    if (event.key === " ") {
+      return "space";
+    }
+    if (event.key.length === 1 && /^[a-z0-9,./;'[\]\\\-=`]$/i.test(event.key)) {
+      return event.key.toLowerCase();
+    }
+    return null;
+  }
+
   function sendRemoteKey(payload) {
     keyChain = keyChain
       .then(async () => {
@@ -742,6 +899,34 @@
       .catch((error) => {
         setStatus(error.message);
       });
+  }
+
+  function sendRemoteKeyState(key, state) {
+    if (!key) {
+      return;
+    }
+    if (state === "down") {
+      if (remoteKeysDown.has(key)) {
+        return;
+      }
+      remoteKeysDown.add(key);
+    } else {
+      if (!remoteKeysDown.has(key)) {
+        return;
+      }
+      remoteKeysDown.delete(key);
+    }
+    sendRemoteKey({ kind: "state", key, state });
+  }
+
+  function releaseRemoteKeys(reason = "") {
+    if (!remoteKeysDown.size) {
+      return;
+    }
+    [...remoteKeysDown].reverse().forEach((key) => sendRemoteKeyState(key, "up"));
+    if (reason) {
+      setStatus(reason);
+    }
   }
 
   stage?.addEventListener("pointerdown", (event) => {
@@ -764,6 +949,7 @@
     try {
       stage.setPointerCapture(event.pointerId);
       appendPointerEvent("down", event, button);
+      startPointerKeepalive();
       flushPointerEvents();
       setStatus(`Pointer ${button} aktif`);
     } catch (error) {
@@ -772,7 +958,10 @@
   });
 
   stage?.addEventListener("pointermove", (event) => {
-    if (!pointerCanStream() || !pointerState || event.pointerId !== pointerState.pointerId) {
+    if (!pointerCanStream() || !controlIsReady()) {
+      return;
+    }
+    if (pointerState && event.pointerId !== pointerState.pointerId) {
       return;
     }
 
@@ -782,7 +971,7 @@
         ? event.getCoalescedEvents()
         : [event];
       const usableSamples = samples.length ? samples.slice(-16) : [event];
-      usableSamples.forEach((sample) => appendPointerEvent("move", sample, pointerState.button));
+      usableSamples.forEach((sample) => appendPointerEvent("move", sample, pointerState?.button || "left"));
       if (pointerEvents.length >= Math.max(4, pointerMaxEvents - 16)) {
         flushPointerEvents();
       } else {
@@ -801,11 +990,12 @@
     event.preventDefault();
     try {
       appendPointerEvent(type, event, pointerState.button);
+      stopPointerKeepalive();
       flushPointerEvents();
+      pointerState = null;
       if (stage.hasPointerCapture(event.pointerId)) {
         stage.releasePointerCapture(event.pointerId);
       }
-      pointerState = null;
       setStatus(type === "up" ? "Pointer selesai" : "Pointer dibatalkan");
       window.setTimeout(requestFrame, 180);
     } catch (error) {
@@ -881,8 +1071,40 @@
     }
   });
 
+  stage?.addEventListener("wheel", (event) => {
+    if (!controlIsReady() || !wheelInputAvailable) {
+      return;
+    }
+    event.preventDefault();
+    const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 3 : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? 12 : 80;
+    const normalizeWheel = (value) => {
+      if (!value) {
+        return 0;
+      }
+      return Math.max(-20, Math.min(20, -Math.sign(value) * Math.max(1, Math.round(Math.abs(value) / unit))));
+    };
+    pointerEvents.push({
+      type: "wheel",
+      button: "middle",
+      sequence: ++pointerSequence,
+      deltaX: normalizeWheel(event.deltaX),
+      deltaY: normalizeWheel(event.deltaY),
+    });
+    schedulePointerFlush();
+  }, { passive: false });
+
   stage?.addEventListener("keydown", (event) => {
     if (!keyboardIsReady()) {
+      return;
+    }
+
+    if (keyboardStateAvailable) {
+      const key = keyboardStateKey(event);
+      if (!key) {
+        return;
+      }
+      event.preventDefault();
+      sendRemoteKeyState(key, "down");
       return;
     }
 
@@ -895,8 +1117,27 @@
     sendRemoteKey(payload);
   });
 
+  stage?.addEventListener("keyup", (event) => {
+    if (!keyboardIsReady() || !keyboardStateAvailable) {
+      return;
+    }
+    const key = keyboardStateKey(event);
+    if (!key) {
+      return;
+    }
+    event.preventDefault();
+    sendRemoteKeyState(key, "up");
+  });
+
+  window.addEventListener("blur", () => {
+    cancelPointerGesture("Fokus browser berpindah");
+    releaseRemoteKeys("Fokus browser berpindah");
+  });
+
   window.addEventListener("beforeunload", () => {
     cancelPointerGesture();
+    releaseRemoteKeys();
+    stopPointerKeepalive();
     stopTimers();
   });
 
@@ -908,6 +1149,9 @@
   root.dataset.keyboard = "off";
   root.dataset.fullscreen = "off";
   root.dataset.grid = "off";
+  if (transportSelect) {
+    transportSelect.value = deviceSelect?.selectedOptions[0]?.dataset.transportMode || "auto";
+  }
   updateSwitchAria();
   updateSpeedButtons();
   updateFullscreenState();

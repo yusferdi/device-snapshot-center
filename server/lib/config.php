@@ -138,6 +138,7 @@ $config = [
         'mouse_click' => 'Klik mouse',
         'mouse_input' => 'Input pointer realtime',
         'keyboard_input' => 'Input keyboard',
+        'keyboard_state' => 'Input keyboard stateful',
         'file_list' => 'File manager: daftar file',
         'file_pull' => 'File manager: ambil file',
         'file_put' => 'File manager: kirim file',

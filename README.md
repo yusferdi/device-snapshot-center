@@ -93,13 +93,20 @@ Agent akan enroll sekali, menyimpan token di `agent/agent.state.json`, lalu memi
 - Live screen di dashboard PHP melalui frame berkala dari agent.
 - Fullscreen live screen melalui browser Fullscreen API.
 - Mode live speed `Eco`, `Flow`, dan `Burst` untuk mengatur ritme request frame dari dashboard.
+- Profil speed benar-benar berbeda: `Eco` menghemat request, `Flow` seimbang, dan `Burst` mengutamakan frame serta input paling cepat.
+- Capture layar dan session recording berjalan di background agent agar polling mouse/keyboard tidak berhenti selama frame diambil atau di-upload.
+- Metode koneksi dapat dipilih per-device dari dashboard: `Auto`, `Long poll`, atau `Polling`, tanpa restart agent.
 - Grid overlay opsional untuk membantu validasi alignment layar dan koordinat klik.
 - Klik mouse jarak jauh melalui action `mouse_click` untuk left-click, double-click, dan right-click, hanya jika `allowRemoteControl` aktif di config agent.
 - Pointer drag-and-drop melalui action `mouse_input` dengan event berurutan `down`, `move`, `up`, dan `cancel`. Move batch lama dikompaksi agar antrean tidak tertinggal.
+- Drag yang sedang ditahan mengirim keepalive sehingga tombol mouse tidak dilepas watchdog saat pointer diam.
+- Mouse wheel vertikal/horizontal dikirim sebagai pointer input, termasuk saat fullscreen.
 - Input keyboard jarak jauh melalui action `keyboard_input`, hanya jika `allowRemoteControl` dan `allowKeyboardInput` aktif di config agent.
+- Agent `1.6+` memakai keyboard state `down/up`, mendukung tahan tombol, key repeat OS, Backspace, Delete, arrow, F1-F24, modifier, numpad, dan media key.
+- Koordinat pointer memakai ukuran layar kontrol agent, sehingga tetap presisi saat ukuran screenshot dan DPI Windows berbeda.
 - File transfer dua arah melalui folder `fileTransferRoot`, hanya jika `allowFileTransfer` aktif.
 - Session recording menghasilkan artifact HTML replay dari frame screenshot, hanya jika `allowSessionRecording` aktif.
-- Tombol Stop dan tombol Escape mematikan live view serta mode kontrol klik dari dashboard.
+- Tombol Stop dan `Ctrl+Alt+Escape` mematikan live view serta mode kontrol. Saat keyboard remote aktif, `Escape` dikirim ke device.
 - Watchdog agent otomatis melepas tombol mouse yang masih tertahan ketika transport terputus atau pointer berhenti mengirim event.
 - Capability negotiation menjaga rolling upgrade: agent lama tetap menerima `mouse_click`, sedangkan agent `1.5+` otomatis memakai `mouse_input`.
 - Upload artifact disimpan di `storage/uploads/` secara default, bukan di folder public `server/`.
@@ -116,6 +123,7 @@ Agent akan enroll sekali, menyimpan token di `agent/agent.state.json`, lalu memi
 - `mouse_click`: klik mouse pada koordinat layar yang dikirim dari live view. Payload mendukung `button` (`left`, `right`, `middle`) dan `double`.
 - `mouse_input`: batch pointer berurutan untuk move dan drag-and-drop. Action ini bersifat ephemeral sehingga hasil sukses segera dibersihkan dan tidak memenuhi tabel command/audit.
 - `keyboard_input`: input keyboard dari live view. Payload mendukung `kind=text` untuk karakter biasa atau `kind=key` untuk tombol seperti `enter`, `backspace`, `left`, `right`, dan modifier `control`, `alt`, `shift`.
+- `keyboard_state`: event keyboard ephemeral `down/up` untuk pengalaman input stateful agent `1.6+`.
 - `file_list`: daftar isi folder transfer agent.
 - `file_pull`: ambil file dari folder transfer agent sebagai artifact dashboard.
 - `file_put`: kirim upload dashboard ke folder transfer agent.
@@ -140,6 +148,8 @@ Prototype ini sengaja tidak menyediakan arbitrary shell command atau akses file 
 ## Adaptive Transport
 
 Fondasi saat ini menyediakan `http-long-poll` sebagai jalur utama dan `http-poll` sebagai fallback. Server mengirim capability transport pada setiap respons poll, sehingga nilai `.env` dapat berubah tanpa restart agent.
+
+Dashboard menyimpan `transport_mode` per device. Pilihan `Long poll` akan tetap jatuh ke `Polling` jika runtime server tidak mendukung request panjang; indikator dashboard menampilkan metode efektifnya.
 
 - `APP_AGENT_LONG_POLL_MS=15000`: durasi tunggu request agent; isi `0` untuk memaksa short-poll.
 - `APP_AGENT_POLL_PROBE_MS=120`: ritme server memeriksa command selama long-poll.

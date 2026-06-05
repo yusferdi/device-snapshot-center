@@ -10,7 +10,7 @@ import robot from "robotjs";
 import screenshotDesktop from "screenshot-desktop";
 
 const execFileAsync = promisify(execFile);
-const AGENT_VERSION = "1.5.0";
+const AGENT_VERSION = "1.6.0";
 const CONFIG_PATH = path.resolve("agent.config.json");
 const EXAMPLE_CONFIG_PATH = path.resolve("agent.config.example.json");
 const STATE_PATH = path.resolve("agent.state.json");
@@ -463,6 +463,7 @@ async function captureScreen(config, payload) {
         bytes: stat.size,
         capturedAt: new Date().toISOString(),
         displays,
+        controlScreenSize: robot.getScreenSize(),
       },
     };
   } catch (error) {
@@ -684,6 +685,15 @@ async function mouseInput(config, payload) {
         processed += 1;
         continue;
       }
+      if (type === "wheel") {
+        const deltaX = clampInteger(event?.deltaX, -20, 20, 0);
+        const deltaY = clampInteger(event?.deltaY, -20, 20, 0);
+        if (deltaX || deltaY) {
+          robot.scrollMouse(deltaX, deltaY);
+        }
+        processed += 1;
+        continue;
+      }
 
       const x = clampInteger(event?.x, 0, Math.max(0, screenSize.width - 1), -1);
       const y = clampInteger(event?.y, 0, Math.max(0, screenSize.height - 1), -1);
@@ -739,8 +749,15 @@ const ROBOT_KEY_ALLOWLIST = new Set([
   ",", ".", "/", ";", "'", "[", "]", "\\", "-", "=", "`",
   "space", "backspace", "delete", "enter", "tab", "escape",
   "up", "down", "left", "right", "home", "end", "pageup", "pagedown",
-  "insert", "capslock",
+  "insert", "capslock", "printscreen", "menu",
+  "control", "alt", "shift", "command",
+  "audio_mute", "audio_vol_down", "audio_vol_up", "audio_play", "audio_stop",
+  "audio_pause", "audio_prev", "audio_next",
+  "numpad_lock", "numpad_0", "numpad_1", "numpad_2", "numpad_3", "numpad_4",
+  "numpad_5", "numpad_6", "numpad_7", "numpad_8", "numpad_9",
+  "numpad_+", "numpad_-", "numpad_*", "numpad_/", "numpad_.",
   "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
+  "f13", "f14", "f15", "f16", "f17", "f18", "f19", "f20", "f21", "f22", "f23", "f24",
 ]);
 
 const MODIFIER_ALIASES = new Map([
@@ -810,6 +827,77 @@ async function keyboardInput(config, payload) {
     key,
     modifiers,
     tappedAt: new Date().toISOString(),
+  };
+}
+
+const activeKeyboardKeys = new Set();
+let keyboardReleaseTimer = null;
+
+function releaseActiveKeyboardKeys(reason = "release") {
+  if (keyboardReleaseTimer) {
+    clearTimeout(keyboardReleaseTimer);
+    keyboardReleaseTimer = null;
+  }
+  const released = [];
+  for (const key of [...activeKeyboardKeys].reverse()) {
+    try {
+      robot.keyToggle(key, "up");
+      released.push(key);
+    } catch (error) {
+      console.error(`[agent] failed to release keyboard key ${key}: ${error.message}`);
+    }
+  }
+  activeKeyboardKeys.clear();
+  if (released.length) {
+    console.log(`[agent] keyboard safety release (${reason}): ${released.join(", ")}`);
+  }
+  return released;
+}
+
+function armKeyboardSafetyRelease() {
+  if (keyboardReleaseTimer) {
+    clearTimeout(keyboardReleaseTimer);
+    keyboardReleaseTimer = null;
+  }
+  if (!activeKeyboardKeys.size) {
+    return;
+  }
+  keyboardReleaseTimer = setTimeout(() => {
+    releaseActiveKeyboardKeys("watchdog timeout");
+  }, 15000);
+}
+
+async function keyboardState(config, payload) {
+  if (!config.allowRemoteControl || !config.allowKeyboardInput) {
+    throw new Error("Remote keyboard input is disabled in agent.config.json.");
+  }
+
+  const key = normalizeRobotKey(payload?.key);
+  const state = String(payload?.state || "").toLowerCase();
+  if (!["down", "up"].includes(state)) {
+    throw new Error("payload.state must be down or up.");
+  }
+  if (key === "delete" && activeKeyboardKeys.has("control") && activeKeyboardKeys.has("alt")) {
+    throw new Error("Ctrl+Alt+Delete is not supported.");
+  }
+
+  if (state === "down") {
+    if (!activeKeyboardKeys.has(key)) {
+      robot.keyToggle(key, "down");
+      activeKeyboardKeys.add(key);
+    }
+  } else if (activeKeyboardKeys.has(key)) {
+    robot.keyToggle(key, "up");
+    activeKeyboardKeys.delete(key);
+  }
+  armKeyboardSafetyRelease();
+
+  return {
+    kind: "state",
+    key,
+    state,
+    activeKeys: [...activeKeyboardKeys],
+    appliedAt: new Date().toISOString(),
   };
 }
 
@@ -938,6 +1026,15 @@ async function handleCommand(config, state, command) {
       return;
     }
 
+    case "keyboard_state": {
+      const result = await keyboardState(config, payload);
+      await complete(config, state, id, {
+        status: "succeeded",
+        result_json: result,
+      });
+      return;
+    }
+
     case "file_list": {
       const result = await listTransferFiles(config, payload);
       await complete(config, state, id, {
@@ -995,6 +1092,21 @@ async function handleCommand(config, state, command) {
   }
 }
 
+const BACKGROUND_COMMAND_ACTIONS = new Set(["capture_screen", "record_session"]);
+const backgroundCommands = new Map();
+
+async function executeCommand(config, state, command) {
+  try {
+    await handleCommand(config, state, command);
+  } catch (error) {
+    console.error(`[agent] command #${command.id} failed: ${error.message}`);
+    await complete(config, state, Number(command.id), {
+      status: "failed",
+      error_text: error.stack || error.message,
+    });
+  }
+}
+
 let activeTransport = "";
 let longPollSuspendedUntil = 0;
 let consecutivePollErrors = 0;
@@ -1018,23 +1130,31 @@ async function pollOnce(config, state) {
       : config.pollIntervalMs;
   }
 
-  try {
-    await handleCommand(config, state, result.command);
-  } catch (error) {
-    console.error(`[agent] command #${result.command.id} failed: ${error.message}`);
-    await complete(config, state, Number(result.command.id), {
-      status: "failed",
-      error_text: error.stack || error.message,
-    });
+  const commandId = Number(result.command.id);
+  const action = String(result.command.action);
+  if (BACKGROUND_COMMAND_ACTIONS.has(action)) {
+    const task = executeCommand(config, state, result.command)
+      .catch((error) => {
+        console.error(`[agent] background command #${commandId} completion failed: ${error.message}`);
+      })
+      .finally(() => {
+        backgroundCommands.delete(commandId);
+      });
+    backgroundCommands.set(commandId, task);
+    return 0;
   }
+
+  await executeCommand(config, state, result.command);
   return 0;
 }
 
 async function main() {
   const config = await loadConfig();
   const state = await enrollIfNeeded(config, await loadState());
+  robot.setMouseDelay(0);
+  robot.setKeyboardDelay(0);
 
-  console.log(`[agent] visible agent started for "${config.deviceName}"`);
+  console.log(`[agent] visible agent v${AGENT_VERSION} started for "${config.deviceName}"`);
   console.log(`[agent] connecting to ${config.serverUrl}`);
   console.log(`[agent] preferred transport=http-long-poll wait=${config.longPollMs}ms fallback=${config.pollIntervalMs}ms`);
   console.log(`[agent] logDirectory=${config.logDirectory}`);
@@ -1058,6 +1178,7 @@ async function main() {
       }
       activeTransport = "";
       releaseActiveMouseButtons("transport error");
+      releaseActiveKeyboardKeys("transport error");
       await sleep(reconnectDelayMs);
       reconnectDelayMs = Math.min(config.reconnectMaxMs, Math.max(config.reconnectMinMs, reconnectDelayMs * 2));
     }
@@ -1065,6 +1186,8 @@ async function main() {
 }
 
 main().catch((error) => {
+  releaseActiveMouseButtons("fatal error");
+  releaseActiveKeyboardKeys("fatal error");
   console.error(`[agent] fatal: ${error.message}`);
   process.exitCode = 1;
 });

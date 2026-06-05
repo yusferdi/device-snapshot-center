@@ -15,7 +15,7 @@ require_csrf_value((string) ($body['csrf_token'] ?? ($_SERVER['HTTP_X_CSRF_TOKEN
 function live_keyboard_payload(array $body): array
 {
     $kind = strtolower((string) ($body['kind'] ?? 'key'));
-    if (!in_array($kind, ['text', 'key'], true)) {
+    if (!in_array($kind, ['text', 'key', 'state'], true)) {
         json_response(['ok' => false, 'error' => 'Jenis input keyboard tidak valid'], 400);
     }
 
@@ -38,8 +38,15 @@ function live_keyboard_payload(array $body): array
         ',', '.', '/', ';', "'", '[', ']', '\\', '-', '=', '`',
         'space', 'backspace', 'delete', 'enter', 'tab', 'escape',
         'up', 'down', 'left', 'right', 'home', 'end', 'pageup', 'pagedown',
-        'insert', 'capslock',
+        'insert', 'capslock', 'printscreen', 'menu',
+        'control', 'alt', 'shift', 'command',
+        'audio_mute', 'audio_vol_down', 'audio_vol_up', 'audio_play', 'audio_stop',
+        'audio_pause', 'audio_prev', 'audio_next',
+        'numpad_lock', 'numpad_0', 'numpad_1', 'numpad_2', 'numpad_3', 'numpad_4',
+        'numpad_5', 'numpad_6', 'numpad_7', 'numpad_8', 'numpad_9',
+        'numpad_+', 'numpad_-', 'numpad_*', 'numpad_/', 'numpad_.',
         'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11', 'f12',
+        'f13', 'f14', 'f15', 'f16', 'f17', 'f18', 'f19', 'f20', 'f21', 'f22', 'f23', 'f24',
     ], true);
 
     $key = strtolower((string) ($body['key'] ?? ''));
@@ -75,11 +82,20 @@ function live_keyboard_payload(array $body): array
         json_response(['ok' => false, 'error' => 'Kombinasi keyboard ini tidak didukung'], 400);
     }
 
-    return [
-        'kind' => 'key',
+    $payload = [
+        'kind' => $kind,
         'key' => $key,
         'modifiers' => $modifiers,
     ];
+    if ($kind === 'state') {
+        $state = strtolower((string) ($body['state'] ?? ''));
+        if (!in_array($state, ['down', 'up'], true)) {
+            json_response(['ok' => false, 'error' => 'State keyboard tidak valid'], 400);
+        }
+        $payload['state'] = $state;
+    }
+
+    return $payload;
 }
 
 function live_pointer_payload(array $body): array
@@ -90,7 +106,7 @@ function live_pointer_payload(array $body): array
         json_response(['ok' => false, 'error' => 'Batch pointer tidak valid'], 400);
     }
 
-    $allowedTypes = ['move' => true, 'down' => true, 'up' => true, 'cancel' => true];
+    $allowedTypes = ['move' => true, 'down' => true, 'up' => true, 'cancel' => true, 'wheel' => true];
     $allowedButtons = ['left' => true, 'right' => true, 'middle' => true];
     $normalizedEvents = [];
     foreach ($events as $event) {
@@ -109,7 +125,7 @@ function live_pointer_payload(array $body): array
             'button' => $button,
             'sequence' => max(0, (int) ($event['sequence'] ?? 0)),
         ];
-        if ($type !== 'cancel') {
+        if (!in_array($type, ['cancel', 'wheel'], true)) {
             $x = filter_var($event['x'] ?? null, FILTER_VALIDATE_INT);
             $y = filter_var($event['y'] ?? null, FILTER_VALIDATE_INT);
             if ($x === false || $y === false || $x < 0 || $y < 0 || $x > 20000 || $y > 20000) {
@@ -117,6 +133,13 @@ function live_pointer_payload(array $body): array
             }
             $normalized['x'] = $x;
             $normalized['y'] = $y;
+        }
+        if ($type === 'wheel') {
+            $normalized['deltaX'] = max(-20, min(20, (int) ($event['deltaX'] ?? 0)));
+            $normalized['deltaY'] = max(-20, min(20, (int) ($event['deltaY'] ?? 0)));
+            if ($normalized['deltaX'] === 0 && $normalized['deltaY'] === 0) {
+                continue;
+            }
         }
         $normalizedEvents[] = $normalized;
     }
@@ -149,13 +172,13 @@ function queue_pointer_command(int $deviceId, array $payload): int
          FROM commands
          WHERE device_id = ? AND action = 'mouse_input' AND status = 'queued'
          ORDER BY id DESC
-         LIMIT 5"
+         LIMIT 1"
     );
     $stmt->execute([$deviceId]);
     foreach ($stmt->fetchAll() as $queued) {
         $existing = json_decode((string) ($queued['payload_json'] ?? ''), true);
         if (!is_array($existing) || ($existing['kind'] ?? '') !== 'move') {
-            continue;
+            break;
         }
 
         $update = db()->prepare(
@@ -182,7 +205,7 @@ if ($deviceId <= 0) {
     json_response(['ok' => false, 'error' => 'device_id required'], 400);
 }
 
-$stmt = db()->prepare('SELECT id, name, hostname, platform, agent_version, last_seen FROM devices WHERE id = ? LIMIT 1');
+$stmt = db()->prepare('SELECT id, name, hostname, platform, agent_version, transport_mode, last_seen FROM devices WHERE id = ? LIMIT 1');
 $stmt->execute([$deviceId]);
 $device = $stmt->fetch();
 if (!$device) {
@@ -190,22 +213,32 @@ if (!$device) {
 }
 
 if ($action === 'capture') {
+    $profile = strtolower((string) ($body['profile'] ?? 'flow'));
+    $cooldownSeconds = [
+        'eco' => 3,
+        'flow' => 1,
+        'burst' => 0,
+    ][$profile] ?? 1;
     $recentFrame = false;
-    $stmt = db()->prepare(
-        "SELECT 1
-         FROM commands
-         WHERE device_id = ?
-           AND action = 'capture_screen'
-           AND status = 'succeeded'
-           AND completed_at >= DATE_SUB(NOW(), INTERVAL 1 SECOND)
-         LIMIT 1"
-    );
-    $stmt->execute([$deviceId]);
-    $recentFrame = (bool) $stmt->fetchColumn();
+    if ($cooldownSeconds > 0) {
+        $cooldownSeconds = max(1, min(10, $cooldownSeconds));
+        $stmt = db()->prepare(
+            "SELECT 1
+             FROM commands
+             WHERE device_id = ?
+               AND action = 'capture_screen'
+               AND status = 'succeeded'
+               AND completed_at >= DATE_SUB(NOW(), INTERVAL {$cooldownSeconds} SECOND)
+             LIMIT 1"
+        );
+        $stmt->execute([$deviceId]);
+        $recentFrame = (bool) $stmt->fetchColumn();
+    }
 
     if (!$recentFrame && !has_pending_action($deviceId, 'capture_screen')) {
         queue_device_command($deviceId, 'capture_screen', [
             'timeoutMs' => 15000,
+            'profile' => $profile,
         ]);
     }
 }
@@ -235,10 +268,20 @@ if ($action === 'pointer') {
 }
 
 if ($action === 'key') {
-    queue_device_command($deviceId, 'keyboard_input', live_keyboard_payload($body));
+    $keyboardPayload = live_keyboard_payload($body);
+    queue_device_command($deviceId, ($keyboardPayload['kind'] ?? '') === 'state' ? 'keyboard_state' : 'keyboard_input', $keyboardPayload);
 }
 
-if (!in_array($action, ['status', 'capture', 'click', 'pointer', 'key'], true)) {
+if ($action === 'transport') {
+    $transportMode = strtolower((string) ($body['mode'] ?? 'auto'));
+    if (!array_key_exists($transportMode, transport_modes())) {
+        json_response(['ok' => false, 'error' => 'Metode koneksi tidak valid'], 400);
+    }
+    db()->prepare('UPDATE devices SET transport_mode = ? WHERE id = ?')->execute([$transportMode, $deviceId]);
+    $device['transport_mode'] = $transportMode;
+}
+
+if (!in_array($action, ['status', 'capture', 'click', 'pointer', 'key', 'transport'], true)) {
     json_response(['ok' => false, 'error' => 'Action live tidak valid'], 400);
 }
 
@@ -276,15 +319,22 @@ json_response([
     'pending_click' => has_pending_action($deviceId, 'mouse_click'),
     'pending_pointer' => has_pending_action($deviceId, 'mouse_input'),
     'pending_keyboard' => has_pending_action($deviceId, 'keyboard_input'),
+    'pending_keyboard_state' => has_pending_action($deviceId, 'keyboard_state'),
     'transport' => [
         'profile' => 'adaptive-http',
-        'primary' => effective_agent_long_poll_ms() > 0
+        'requested' => (string) ($device['transport_mode'] ?? 'auto'),
+        'primary' => effective_agent_long_poll_ms((string) ($device['transport_mode'] ?? 'auto')) > 0
             ? 'http-long-poll'
             : 'http-poll',
         'fallback' => 'http-poll',
+        'available' => effective_agent_long_poll_ms('long-poll') > 0
+            ? ['auto', 'long-poll', 'poll']
+            : ['auto', 'poll'],
     ],
     'capabilities' => [
         'pointer_input' => version_compare((string) ($device['agent_version'] ?? '0.0.0'), '1.5.0', '>='),
+        'keyboard_state' => version_compare((string) ($device['agent_version'] ?? '0.0.0'), '1.6.0', '>='),
+        'wheel_input' => version_compare((string) ($device['agent_version'] ?? '0.0.0'), '1.6.0', '>='),
     ],
     'frame' => $frame,
 ]);

@@ -52,7 +52,11 @@ Device Snapshot Center should feel like a compact remote-operations console: cal
 - Stop and Escape are panic-off controls.
 - Fullscreen should preserve the control dock and accurate pointer mapping.
 - Pointer control uses an ordered down/move/up/cancel state machine. Move packets may be coalesced, but boundary events must never be reordered or silently discarded.
+- Held pointer gestures send a keepalive, and pointer coordinates target the agent control-screen dimensions rather than assuming screenshot pixels match the OS DPI coordinate space.
+- Wheel input and stateful keyboard down/up events share the same input-priority lane ahead of screen capture commands.
+- Screen capture and session recording run as background agent jobs so HTTP polling remains available for input while a frame is captured and uploaded.
 - A transport failure must release active mouse buttons automatically.
+- A transport failure, browser blur, or panic-off must release active keyboard keys automatically.
 - Animation should be short, functional, and disabled through `prefers-reduced-motion`.
 
 ## Transport System

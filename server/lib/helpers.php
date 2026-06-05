@@ -185,6 +185,7 @@ function ensure_runtime_schema(): void
         'favorite' => "ALTER TABLE devices ADD COLUMN favorite TINYINT(1) NOT NULL DEFAULT 0 AFTER last_seen",
         'tags' => "ALTER TABLE devices ADD COLUMN tags VARCHAR(255) NOT NULL DEFAULT '' AFTER favorite",
         'permission_profile' => "ALTER TABLE devices ADD COLUMN permission_profile VARCHAR(32) NOT NULL DEFAULT 'full' AFTER tags",
+        'transport_mode' => "ALTER TABLE devices ADD COLUMN transport_mode VARCHAR(32) NOT NULL DEFAULT 'auto' AFTER permission_profile",
     ];
 
     foreach ($updates as $column => $sql) {
@@ -379,11 +380,24 @@ function allowed_actions(): array
 
 function is_ephemeral_action(string $action): bool
 {
-    return in_array($action, ['mouse_input'], true);
+    return in_array($action, ['mouse_input', 'keyboard_state'], true);
 }
 
-function effective_agent_long_poll_ms(): int
+function transport_modes(): array
 {
+    return [
+        'auto' => 'Auto',
+        'long-poll' => 'Long poll',
+        'poll' => 'Polling',
+    ];
+}
+
+function effective_agent_long_poll_ms(string $mode = 'auto'): int
+{
+    if ($mode === 'poll') {
+        return 0;
+    }
+
     $liveConfig = app_config()['live'] ?? [];
     $waitMs = max(0, min(25000, (int) ($liveConfig['agent_long_poll_ms'] ?? 15000)));
     if (PHP_SAPI === 'cli-server' && empty($liveConfig['allow_cli_server_long_poll'])) {
@@ -409,9 +423,9 @@ function device_action_allowed(array $device, string $action): bool
     $base = ['health_check', 'system_info', 'network_interfaces', 'list_log_files', 'upload_log_file', 'run_diagnostic', 'capture_screen'];
     $groups = [
         'view' => $base,
-        'control' => array_merge($base, ['mouse_click', 'mouse_input', 'keyboard_input', 'record_session']),
+        'control' => array_merge($base, ['mouse_click', 'mouse_input', 'keyboard_input', 'keyboard_state', 'record_session']),
         'files' => array_merge($base, ['file_list', 'file_pull', 'file_put']),
-        'full' => array_merge($base, ['mouse_click', 'mouse_input', 'keyboard_input', 'file_list', 'file_pull', 'file_put', 'record_session']),
+        'full' => array_merge($base, ['mouse_click', 'mouse_input', 'keyboard_input', 'keyboard_state', 'file_list', 'file_pull', 'file_put', 'record_session']),
     ];
 
     return in_array($action, $groups[$profile] ?? $groups['full'], true);

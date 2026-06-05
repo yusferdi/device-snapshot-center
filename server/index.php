@@ -453,9 +453,22 @@ apply_security_headers();
                             <div class="select-wrap">
                                 <select data-live-device>
                                     <?php foreach ($devices as $device): ?>
-                                        <option value="<?= (int) $device['id'] ?>">
+                                        <option
+                                            value="<?= (int) $device['id'] ?>"
+                                            data-transport-mode="<?= h((string) ($device['transport_mode'] ?? 'auto')) ?>"
+                                        >
                                             <?= h($device['name']) ?>
                                         </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="control-cluster connection-cluster">
+                            <span class="control-cluster-title">Connection</span>
+                            <div class="select-wrap">
+                                <select aria-label="Connection method" data-live-transport-select>
+                                    <?php foreach (transport_modes() as $transportKey => $transportLabel): ?>
+                                        <option value="<?= h($transportKey) ?>"><?= h($transportLabel) ?></option>
                                     <?php endforeach; ?>
                                 </select>
                             </div>
@@ -463,9 +476,9 @@ apply_security_headers();
                         <div class="control-cluster speed-cluster">
                             <span class="control-cluster-title">Speed</span>
                             <div class="segmented-control" role="group" aria-label="Live speed">
-                                <button class="segment" type="button" aria-pressed="false" data-live-speed="eco">Eco</button>
-                                <button class="segment" type="button" aria-pressed="true" data-live-speed="flow">Flow</button>
-                                <button class="segment" type="button" aria-pressed="false" data-live-speed="burst">Burst</button>
+                                <button class="segment" type="button" aria-pressed="false" title="Hemat bandwidth" data-live-speed="eco">Eco</button>
+                                <button class="segment" type="button" aria-pressed="true" title="Seimbang" data-live-speed="flow">Flow</button>
+                                <button class="segment" type="button" aria-pressed="false" title="Respons tercepat" data-live-speed="burst">Burst</button>
                             </div>
                         </div>
                         <div class="control-cluster access-cluster">
@@ -511,7 +524,7 @@ apply_security_headers();
                                 </svg>
                                 <span class="sr-only" data-button-label>Enter fullscreen</span>
                             </button>
-                            <button class="button compact danger icon-button" type="button" aria-label="Stop control" title="Stop control" data-live-stop>
+                            <button class="button compact danger icon-button" type="button" aria-label="Stop control" title="Stop control (Ctrl+Alt+Escape)" data-live-stop>
                                 <svg aria-hidden="true" viewBox="0 0 24 24">
                                     <path d="M7 7h10v10H7z"></path>
                                 </svg>

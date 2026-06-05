@@ -12,7 +12,11 @@ $pdo = db();
 $liveConfig = app_config()['live'] ?? [];
 
 $agentVersion = clean_text((string) ($body['agent_version'] ?? ''), 40);
-$serverLongPollMs = effective_agent_long_poll_ms();
+$transportMode = (string) ($device['transport_mode'] ?? 'auto');
+if (!array_key_exists($transportMode, transport_modes())) {
+    $transportMode = 'auto';
+}
+$serverLongPollMs = effective_agent_long_poll_ms($transportMode);
 $requestedWaitMs = max(0, min(25000, (int) ($body['wait_ms'] ?? $serverLongPollMs)));
 $waitMs = min($requestedWaitMs, $serverLongPollMs);
 $probeMs = max(50, min(1000, (int) ($liveConfig['agent_poll_probe_ms'] ?? 120)));
@@ -34,7 +38,16 @@ do {
         $stmt = $pdo->prepare(
             "SELECT * FROM commands
              WHERE device_id = ? AND status = 'queued'
-             ORDER BY id ASC
+             ORDER BY
+               CASE action
+                 WHEN 'mouse_input' THEN 0
+                 WHEN 'keyboard_state' THEN 0
+                 WHEN 'mouse_click' THEN 1
+                 WHEN 'keyboard_input' THEN 1
+                 WHEN 'capture_screen' THEN 3
+                 ELSE 2
+               END ASC,
+               id ASC
              LIMIT 1
              FOR UPDATE"
         );
@@ -76,13 +89,27 @@ do {
         break;
     }
 
+    $modeStmt = $pdo->prepare('SELECT transport_mode FROM devices WHERE id = ? LIMIT 1');
+    $modeStmt->execute([(int) $device['id']]);
+    $latestTransportMode = (string) ($modeStmt->fetchColumn() ?: 'auto');
+    if (array_key_exists($latestTransportMode, transport_modes())) {
+        $transportMode = $latestTransportMode;
+    }
+    if ($waitMs > 0 && effective_agent_long_poll_ms($transportMode) === 0) {
+        $waitMs = 0;
+        break;
+    }
+
     $remainingMs = max(1, (int) (($deadline - microtime(true)) * 1000));
     usleep(min($probeMs, $remainingMs) * 1000);
 } while (true);
 
 $transport = [
+    'requested' => $transportMode,
     'selected' => $waitMs > 0 ? 'http-long-poll' : 'http-poll',
-    'available' => $waitMs > 0 ? ['http-long-poll', 'http-poll'] : ['http-poll'],
+    'available' => effective_agent_long_poll_ms('long-poll') > 0
+        ? ['http-long-poll', 'http-poll']
+        : ['http-poll'],
     'wait_ms' => $waitMs,
     'probe_ms' => $probeMs,
     'pointer_batch_ms' => (int) ($liveConfig['pointer_batch_ms'] ?? 48),
