@@ -7,6 +7,7 @@ function json_response(array $data, int $status = 200): void
     apply_security_headers();
     http_response_code($status);
     header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, max-age=0');
     echo json_encode($data, JSON_UNESCAPED_SLASHES);
     exit;
 }
@@ -151,7 +152,12 @@ function require_api_device(): array
     }
 
     $hash = hash('sha256', $token);
-    $stmt = db()->prepare('SELECT * FROM devices WHERE api_token_hash = ? LIMIT 1');
+    $stmt = db()->prepare(
+        'SELECT *, CASE WHEN live_until IS NOT NULL AND live_until >= NOW() THEN 1 ELSE 0 END AS live_active
+         FROM devices
+         WHERE api_token_hash = ?
+         LIMIT 1'
+    );
     $stmt->execute([$hash]);
     $device = $stmt->fetch();
 
@@ -187,6 +193,8 @@ function ensure_runtime_schema(): void
         'permission_profile' => "ALTER TABLE devices ADD COLUMN permission_profile VARCHAR(32) NOT NULL DEFAULT 'full' AFTER tags",
         'transport_mode' => "ALTER TABLE devices ADD COLUMN transport_mode VARCHAR(32) NOT NULL DEFAULT 'poll' AFTER permission_profile",
         'transport_selected' => "ALTER TABLE devices ADD COLUMN transport_selected VARCHAR(32) NOT NULL DEFAULT 'http-poll' AFTER transport_mode",
+        'live_profile' => "ALTER TABLE devices ADD COLUMN live_profile VARCHAR(16) NOT NULL DEFAULT 'flow' AFTER transport_selected",
+        'live_until' => "ALTER TABLE devices ADD COLUMN live_until DATETIME DEFAULT NULL AFTER live_profile",
     ];
 
     foreach ($updates as $column => $sql) {
@@ -213,6 +221,13 @@ function session_boot(): void
             'samesite' => 'Lax',
         ]);
         session_start();
+    }
+}
+
+function release_session_lock(): void
+{
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_write_close();
     }
 }
 
@@ -408,6 +423,41 @@ function effective_agent_long_poll_ms(string $mode = 'poll'): int
     return $waitMs;
 }
 
+function normalize_live_profile(string $profile): string
+{
+    $profile = strtolower(trim($profile));
+    return in_array($profile, ['eco', 'flow', 'burst'], true) ? $profile : 'flow';
+}
+
+function touch_live_session(int $deviceId, string $profile): void
+{
+    $ttl = max(3, min(60, (int) ((app_config()['live'] ?? [])['activity_ttl_seconds'] ?? 12)));
+    $profile = normalize_live_profile($profile);
+    db()->prepare(
+        "UPDATE devices
+         SET live_profile = ?, live_until = DATE_ADD(NOW(), INTERVAL {$ttl} SECOND)
+         WHERE id = ?"
+    )->execute([$profile, $deviceId]);
+}
+
+function effective_agent_poll_after_ms(array $device, bool $longPoll): int
+{
+    if ($longPoll) {
+        return 15;
+    }
+
+    $live = app_config()['live'] ?? [];
+    $active = !empty($device['live_active']);
+    if (!$active) {
+        return max(100, min(5000, (int) ($live['agent_poll_idle_ms'] ?? 500)));
+    }
+
+    $profile = normalize_live_profile((string) ($device['live_profile'] ?? 'flow'));
+    $key = 'agent_poll_' . str_replace('-', '_', $profile) . '_ms';
+    $fallback = ['eco' => 180, 'flow' => 75, 'burst' => 30][$profile];
+    return max(10, min(2000, (int) ($live[$key] ?? $fallback)));
+}
+
 function permission_profiles(): array
 {
     return [
@@ -435,7 +485,16 @@ function device_action_allowed(array $device, string $action): bool
 function latest_screen_command(int $deviceId): ?array
 {
     $stmt = db()->prepare(
-        "SELECT *
+        "SELECT commands.*,
+                (
+                    SELECT completed_at
+                    FROM commands recent_capture
+                    WHERE recent_capture.device_id = commands.device_id
+                      AND recent_capture.action = 'capture_screen'
+                      AND recent_capture.status = 'succeeded'
+                    ORDER BY recent_capture.id DESC
+                    LIMIT 1
+                ) AS observed_at
          FROM commands
          WHERE device_id = ?
            AND action = 'capture_screen'
@@ -478,6 +537,7 @@ function prune_screen_captures(int $deviceId): int
          WHERE device_id = ?
            AND action = 'capture_screen'
            AND status = 'succeeded'
+           AND artifact_path IS NOT NULL
          ORDER BY id DESC"
     );
     $stmt->execute([$deviceId]);
@@ -512,6 +572,30 @@ function has_pending_action(int $deviceId, string $action): bool
     $stmt->execute([$deviceId, $action]);
 
     return (bool) $stmt->fetchColumn();
+}
+
+function pending_action_flags(int $deviceId): array
+{
+    $actions = ['capture_screen', 'mouse_click', 'mouse_input', 'keyboard_input', 'keyboard_state'];
+    $flags = array_fill_keys($actions, false);
+    $placeholders = implode(',', array_fill(0, count($actions), '?'));
+    $stmt = db()->prepare(
+        "SELECT action
+         FROM commands
+         WHERE device_id = ?
+           AND status IN ('queued', 'running')
+           AND action IN ({$placeholders})
+         GROUP BY action"
+    );
+    $stmt->execute(array_merge([$deviceId], $actions));
+    foreach ($stmt->fetchAll() as $row) {
+        $action = (string) ($row['action'] ?? '');
+        if (array_key_exists($action, $flags)) {
+            $flags[$action] = true;
+        }
+    }
+
+    return $flags;
 }
 
 function queue_device_command(int $deviceId, string $action, ?array $payload = null): int

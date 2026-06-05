@@ -2,6 +2,8 @@
 
 require_once __DIR__ . '/../lib/helpers.php';
 
+$requestStartedAt = microtime(true);
+
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     json_response(['ok' => false, 'error' => 'POST required'], 405);
 }
@@ -11,6 +13,7 @@ if (!is_admin_logged_in()) {
 }
 $body = read_json_body();
 require_csrf_value((string) ($body['csrf_token'] ?? ($_SERVER['HTTP_X_CSRF_TOKEN'] ?? '')));
+release_session_lock();
 
 function live_keyboard_payload(array $body): array
 {
@@ -205,15 +208,28 @@ if ($deviceId <= 0) {
     json_response(['ok' => false, 'error' => 'device_id required'], 400);
 }
 
-$stmt = db()->prepare('SELECT id, name, hostname, platform, agent_version, transport_mode, transport_selected, last_seen FROM devices WHERE id = ? LIMIT 1');
+$stmt = db()->prepare(
+    'SELECT id, name, hostname, platform, agent_version, transport_mode, transport_selected,
+            live_profile, live_until, last_seen
+     FROM devices
+     WHERE id = ?
+     LIMIT 1'
+);
 $stmt->execute([$deviceId]);
 $device = $stmt->fetch();
 if (!$device) {
     json_response(['ok' => false, 'error' => 'Device tidak ditemukan'], 404);
 }
 
+$liveProfile = normalize_live_profile((string) ($body['profile'] ?? ($device['live_profile'] ?? 'flow')));
+if (!empty($body['live_active'])) {
+    touch_live_session($deviceId, $liveProfile);
+    $device['live_profile'] = $liveProfile;
+    $device['live_until'] = date('Y-m-d H:i:s', time() + max(3, min(60, (int) ((app_config()['live'] ?? [])['activity_ttl_seconds'] ?? 12))));
+}
+
 if ($action === 'capture') {
-    $profile = strtolower((string) ($body['profile'] ?? 'flow'));
+    $profile = $liveProfile;
     $cooldownSeconds = [
         'eco' => 3,
         'flow' => 1,
@@ -239,6 +255,7 @@ if ($action === 'capture') {
         queue_device_command($deviceId, 'capture_screen', [
             'timeoutMs' => 15000,
             'profile' => $profile,
+            'dedupe' => true,
         ]);
     }
 }
@@ -286,6 +303,7 @@ if (!in_array($action, ['status', 'capture', 'click', 'pointer', 'key', 'transpo
 }
 
 $latest = latest_screen_command($deviceId);
+$pending = pending_action_flags($deviceId);
 $frame = null;
 if ($latest) {
     $result = [];
@@ -302,6 +320,7 @@ if ($latest) {
         'mime' => $latest['artifact_mime'],
         'created_at' => $latest['created_at'],
         'completed_at' => $latest['completed_at'],
+        'observed_at' => $latest['observed_at'] ?? $latest['completed_at'],
         'screen' => $result['screen'] ?? null,
     ];
 }
@@ -315,11 +334,11 @@ json_response([
         'platform' => $device['platform'],
         'last_seen' => $device['last_seen'],
     ],
-    'pending_capture' => has_pending_action($deviceId, 'capture_screen'),
-    'pending_click' => has_pending_action($deviceId, 'mouse_click'),
-    'pending_pointer' => has_pending_action($deviceId, 'mouse_input'),
-    'pending_keyboard' => has_pending_action($deviceId, 'keyboard_input'),
-    'pending_keyboard_state' => has_pending_action($deviceId, 'keyboard_state'),
+    'pending_capture' => $pending['capture_screen'],
+    'pending_click' => $pending['mouse_click'],
+    'pending_pointer' => $pending['mouse_input'],
+    'pending_keyboard' => $pending['keyboard_input'],
+    'pending_keyboard_state' => $pending['keyboard_state'],
     'transport' => [
         'profile' => 'adaptive-http',
         'requested' => (string) ($device['transport_mode'] ?? 'poll'),
@@ -328,6 +347,8 @@ json_response([
         'available' => effective_agent_long_poll_ms('long-poll') > 0
             ? ['poll', 'long-poll', 'auto']
             : ['poll', 'auto'],
+        'live_profile' => (string) ($device['live_profile'] ?? 'flow'),
+        'live_until' => $device['live_until'] ?? null,
     ],
     'capabilities' => [
         'pointer_input' => version_compare((string) ($device['agent_version'] ?? '0.0.0'), '1.5.0', '>='),
@@ -335,4 +356,7 @@ json_response([
         'wheel_input' => version_compare((string) ($device['agent_version'] ?? '0.0.0'), '1.6.0', '>='),
     ],
     'frame' => $frame,
+    'performance' => [
+        'server_ms' => (int) round((microtime(true) - $requestStartedAt) * 1000),
+    ],
 ]);

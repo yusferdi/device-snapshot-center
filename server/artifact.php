@@ -3,6 +3,7 @@
 require_once __DIR__ . '/lib/helpers.php';
 
 require_admin();
+release_session_lock();
 apply_security_headers();
 
 $id = (int) ($_GET['id'] ?? 0);

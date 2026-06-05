@@ -56,6 +56,9 @@ Device Snapshot Center should feel like a compact remote-operations console: cal
 - Wheel input and stateful keyboard down/up events share the same input-priority lane ahead of screen capture commands.
 - Screen capture and session recording run as background agent jobs so HTTP polling remains available for input while a frame is captured and uploaded.
 - Agents start with HTTP polling. The dashboard may explicitly switch a device to long-poll without restarting it, while Auto preserves the current stable method and circuit-breaker fallback.
+- PHP session locks are released immediately after live authentication so frame delivery and input requests can run concurrently.
+- Polling cadence follows live activity and Eco/Flow/Burst profiles, while idle devices back off to reduce database and network load.
+- Identical live frames are hash-deduplicated before upload; freshness uses the latest capture observation rather than only the latest artifact.
 - A transport failure must release active mouse buttons automatically.
 - A transport failure, browser blur, or panic-off must release active keyboard keys automatically.
 - Animation should be short, functional, and disabled through `prefers-reduced-motion`.

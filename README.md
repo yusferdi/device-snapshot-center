@@ -96,6 +96,9 @@ Agent akan enroll sekali, menyimpan token di `agent/agent.state.json`, lalu memi
 - Mode live speed `Eco`, `Flow`, dan `Burst` untuk mengatur ritme request frame dari dashboard.
 - Profil speed benar-benar berbeda: `Eco` menghemat request, `Flow` seimbang, dan `Burst` mengutamakan frame serta input paling cepat.
 - Capture layar dan session recording berjalan di background agent agar polling mouse/keyboard tidak berhenti selama frame diambil atau di-upload.
+- Endpoint live dan artifact melepaskan PHP session lock setelah autentikasi, sehingga frame, status, mouse, dan keyboard dapat diproses paralel pada PHP-FPM/Apache.
+- Polling agent adaptif: idle melambat, sedangkan sesi Eco/Flow/Burst mempercepat command pickup sesuai profil aktif.
+- Frame live identik dideteksi melalui SHA-256 dan tidak di-upload ulang; freshness tetap mengikuti capture terbaru.
 - Metode koneksi dapat dipilih per-device dari dashboard: `Polling`, `Long poll`, atau `Auto`, tanpa restart agent. Agent mulai dengan `Polling`.
 - Grid overlay opsional untuk membantu validasi alignment layar dan koordinat klik.
 - Klik mouse jarak jauh melalui action `mouse_click` untuk left-click, double-click, dan right-click, hanya jika `allowRemoteControl` aktif di config agent.
@@ -155,6 +158,9 @@ Dashboard menyimpan `transport_mode` per device dan metode efektif terakhir. `Po
 - `APP_AGENT_LONG_POLL_MS=15000`: durasi tunggu request agent; isi `0` untuk memaksa short-poll.
 - `APP_AGENT_POLL_PROBE_MS=120`: ritme server memeriksa command selama long-poll.
 - `APP_AGENT_LONG_POLL_ALLOW_CLI_SERVER=false`: melindungi PHP built-in server yang single-worker agar dashboard lokal tidak tertahan.
+- `APP_LIVE_ACTIVITY_TTL_SECONDS=12`: berapa lama profil polling aktif dipertahankan setelah aktivitas dashboard.
+- `APP_AGENT_POLL_IDLE_MS=500`: ritme polling saat tidak ada sesi live.
+- `APP_AGENT_POLL_ECO_MS=180`, `APP_AGENT_POLL_FLOW_MS=75`, `APP_AGENT_POLL_BURST_MS=30`: ritme polling adaptif saat sesi live.
 - `APP_POINTER_BATCH_MS=48`: interval browser mengelompokkan pointer move.
 - `APP_POINTER_MAX_EVENTS=64`: batas event per batch.
 - `APP_POINTER_RELEASE_TIMEOUT_MS=2500`: watchdog pelepas tombol mouse.

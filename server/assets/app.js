@@ -53,6 +53,7 @@
 
   let statusTimer = null;
   let captureTimer = null;
+  let liveLoopGeneration = 0;
   let latestFrameId = null;
   let statusInFlight = false;
   let captureInFlight = false;
@@ -76,6 +77,7 @@
   let pointerInputAvailable = false;
   let keyboardStateAvailable = false;
   let wheelInputAvailable = false;
+  let liveRttMs = null;
   const remoteKeysDown = new Set();
   const pointerEventsSupported = "PointerEvent" in window;
 
@@ -145,7 +147,9 @@
     const requested = String(data.transport.requested || "poll");
     const selected = String(data.transport.primary || "http-poll");
     const selectedLabel = selected === "http-long-poll" ? "Long poll" : "Polling";
-    transport.textContent = requested === "auto" ? `Auto · ${selectedLabel}` : selectedLabel;
+    const transportLabel = requested === "auto" ? `Auto · ${selectedLabel}` : selectedLabel;
+    const latencyLabel = Number.isFinite(liveRttMs) ? ` · ${Math.round(liveRttMs)}ms` : "";
+    transport.textContent = `${transportLabel}${latencyLabel}`;
     transport.dataset.state = requested === "long-poll" && selected !== "http-long-poll" ? "pending" : "ready";
     if (transportSelect && transportSelect.value !== requested) {
       transportSelect.value = requested;
@@ -172,7 +176,12 @@
       return;
     }
 
-    freshness.textContent = `Frame #${frame.id}`;
+    const observedAt = String(frame.observed_at || frame.completed_at || "").replace(" ", "T");
+    const ageMs = Date.now() - Date.parse(observedAt);
+    const ageLabel = Number.isFinite(ageMs) && ageMs >= 0 ? ` · ${Math.max(0, Math.round(ageMs / 100) / 10)}s` : "";
+    const captureMs = Number(frame.screen?.captureMs);
+    const captureLabel = Number.isFinite(captureMs) ? ` · cap ${Math.round(captureMs)}ms` : "";
+    freshness.textContent = `Frame #${frame.id}${ageLabel}${captureLabel}`;
     freshness.dataset.state = "ready";
   }
 
@@ -237,6 +246,7 @@
   }
 
   async function postLive(action, payload = {}) {
+    const requestStartedAt = performance.now();
     const response = await fetch(apiUrl, {
       method: "POST",
       credentials: "same-origin",
@@ -248,6 +258,8 @@
         action,
         csrf_token: csrfToken,
         device_id: selectedDeviceId(),
+        live_active: Boolean(liveToggle?.checked || controlToggle?.checked || keyboardToggle?.checked),
+        profile: activeSpeed,
         ...payload,
       }),
     });
@@ -263,6 +275,9 @@
       throw new Error(data.error || `Request gagal (${response.status})`);
     }
 
+    const requestRttMs = performance.now() - requestStartedAt;
+    liveRttMs = liveRttMs === null ? requestRttMs : ((liveRttMs * 0.75) + (requestRttMs * 0.25));
+    data.client_rtt_ms = Math.round(requestRttMs);
     return data;
   }
 
@@ -369,13 +384,28 @@
   }
 
   function stopTimers() {
+    liveLoopGeneration += 1;
     if (statusTimer) {
-      clearInterval(statusTimer);
+      clearTimeout(statusTimer);
       statusTimer = null;
     }
     if (captureTimer) {
-      clearInterval(captureTimer);
+      clearTimeout(captureTimer);
       captureTimer = null;
+    }
+  }
+
+  async function runCaptureLoop(generation) {
+    await requestFrame();
+    if (generation === liveLoopGeneration && liveToggle?.checked && !document.hidden) {
+      captureTimer = window.setTimeout(() => runCaptureLoop(generation), captureIntervalMs);
+    }
+  }
+
+  async function runStatusLoop(generation) {
+    await refreshStatus();
+    if (generation === liveLoopGeneration && liveToggle?.checked && !document.hidden) {
+      statusTimer = window.setTimeout(() => runStatusLoop(generation), statusIntervalMs);
     }
   }
 
@@ -396,10 +426,9 @@
 
     visibleLiveWanted = false;
     setMode("Live", "live");
-    requestFrame();
-    refreshStatus();
-    captureTimer = setInterval(requestFrame, captureIntervalMs);
-    statusTimer = setInterval(refreshStatus, statusIntervalMs);
+    const generation = liveLoopGeneration;
+    runCaptureLoop(generation);
+    runStatusLoop(generation);
   }
 
   function panicOff() {

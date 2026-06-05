@@ -10,7 +10,7 @@ import robot from "robotjs";
 import screenshotDesktop from "screenshot-desktop";
 
 const execFileAsync = promisify(execFile);
-const AGENT_VERSION = "1.6.1";
+const AGENT_VERSION = "1.6.3";
 const CONFIG_PATH = path.resolve("agent.config.json");
 const EXAMPLE_CONFIG_PATH = path.resolve("agent.config.example.json");
 const STATE_PATH = path.resolve("agent.state.json");
@@ -32,6 +32,20 @@ const DIAGNOSTIC_COMMANDS = {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withTimeout(promise, timeoutMs, message) {
+  let timeout;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function readJson(filePath, fallback = null) {
@@ -390,7 +404,17 @@ async function uploadArtifact(config, state, commandId, filePath, fileName, mime
     throw new Error(`File exceeds maxUploadBytes (${config.maxUploadBytes}).`);
   }
 
-  const buffer = await fsp.readFile(filePath);
+  return uploadArtifactBuffer(config, state, commandId, await fsp.readFile(filePath), fileName, mimeType);
+}
+
+async function uploadArtifactBuffer(config, state, commandId, buffer, fileName, mimeType = "application/octet-stream") {
+  if (!Buffer.isBuffer(buffer) || buffer.length <= 0) {
+    throw new Error("Artifact buffer is empty.");
+  }
+  if (buffer.length > config.maxUploadBytes) {
+    throw new Error(`File exceeds maxUploadBytes (${config.maxUploadBytes}).`);
+  }
+
   const form = new FormData();
   form.append("command_id", String(commandId));
   form.append("artifact", new Blob([buffer], { type: mimeType }), fileName);
@@ -438,42 +462,53 @@ async function removeQuietly(targetPath) {
   }
 }
 
+let cachedDisplays = [];
+let cachedDisplaysAt = 0;
+let lastUploadedScreenHash = "";
+
+async function cachedDisplayList() {
+  if (Date.now() - cachedDisplaysAt < 60000) {
+    return cachedDisplays;
+  }
+  cachedDisplays = await screenshotDesktop.listDisplays().catch(() => []);
+  cachedDisplaysAt = Date.now();
+  return cachedDisplays;
+}
+
 async function captureScreen(config, payload) {
   if (!config.allowScreenCapture) {
     throw new Error("Screen capture is disabled in agent.config.json.");
   }
 
   const timeoutMs = Math.round(clampNumber(payload?.timeoutMs, 3000, 30000, 15000));
-  const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "device-snapshot-"));
   const fileName = `screen-${new Date().toISOString().replace(/[:.]/g, "-")}.jpg`;
-  const filePath = path.join(tempDir, fileName);
+  const startedAt = Date.now();
 
-  try {
-    const displays = await screenshotDesktop.listDisplays().catch(() => []);
-    const resolvedPath = await Promise.race([
-      screenshotDesktop({ filename: filePath, format: "jpg" }),
-      new Promise((_, reject) => {
-        setTimeout(() => reject(new Error(`Screen capture timed out after ${timeoutMs}ms.`)), timeoutMs);
-      }),
-    ]);
-    const stat = await fsp.stat(resolvedPath);
-    return {
-      filePath: resolvedPath,
-      fileName,
-      mimeType: "image/jpeg",
-      cleanupDir: tempDir,
-      metadata: {
-        path: resolvedPath,
-        bytes: stat.size,
-        capturedAt: new Date().toISOString(),
-        displays,
-        controlScreenSize: robot.getScreenSize(),
-      },
-    };
-  } catch (error) {
-    await removeQuietly(tempDir);
-    throw error;
+  const [displays, buffer] = await Promise.all([
+    cachedDisplayList(),
+    withTimeout(
+      screenshotDesktop({ format: "jpg" }),
+      timeoutMs,
+      `Screen capture timed out after ${timeoutMs}ms.`
+    ),
+  ]);
+  if (!Buffer.isBuffer(buffer) || buffer.length <= 0) {
+    throw new Error("Screen capture returned an empty buffer.");
   }
+  const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+  return {
+    buffer,
+    fileName,
+    mimeType: "image/jpeg",
+    metadata: {
+      bytes: buffer.length,
+      sha256,
+      captureMs: Date.now() - startedAt,
+      capturedAt: new Date().toISOString(),
+      displays,
+      controlScreenSize: robot.getScreenSize(),
+    },
+  };
 }
 
 function escapeHtml(value) {
@@ -498,13 +533,11 @@ async function recordSession(config, payload) {
   try {
     for (let index = 0; index < frameCount; index += 1) {
       const frame = await captureScreen(config, { timeoutMs: 15000 });
-      const bytes = await fsp.readFile(frame.filePath);
       frames.push({
         index,
         capturedAt: frame.metadata.capturedAt,
-        dataUrl: `data:image/jpeg;base64,${bytes.toString("base64")}`,
+        dataUrl: `data:image/jpeg;base64,${frame.buffer.toString("base64")}`,
       });
-      await removeQuietly(frame.cleanupDir);
       if (index < frameCount - 1) {
         await sleep(intervalMs);
       }
@@ -979,27 +1012,32 @@ async function handleCommand(config, state, command) {
     }
 
     case "capture_screen": {
-      let snapshot = null;
-      try {
-        snapshot = await captureScreen(config, payload);
-        const artifact = await uploadArtifact(
+      const snapshot = await captureScreen(config, payload);
+      const unchanged = Boolean(
+        payload?.dedupe
+        && lastUploadedScreenHash
+        && snapshot.metadata.sha256 === lastUploadedScreenHash
+      );
+      let artifact = null;
+      if (!unchanged) {
+        artifact = await uploadArtifactBuffer(
           config,
           state,
           id,
-          snapshot.filePath,
+          snapshot.buffer,
           snapshot.fileName,
           snapshot.mimeType
         );
-        await complete(config, state, id, {
-          status: "succeeded",
-          result_json: {
-            screen: snapshot.metadata,
-            uploaded: artifact,
-          },
-        });
-      } finally {
-        await removeQuietly(snapshot?.cleanupDir);
+        lastUploadedScreenHash = snapshot.metadata.sha256;
       }
+      await complete(config, state, id, {
+        status: "succeeded",
+        result_json: {
+          screen: snapshot.metadata,
+          unchanged,
+          uploaded: artifact,
+        },
+      });
       return;
     }
 

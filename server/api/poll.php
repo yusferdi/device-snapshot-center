@@ -24,12 +24,22 @@ $deadline = microtime(true) + ($waitMs / 1000);
 
 $stmt = $pdo->prepare(
     $agentVersion === ''
-        ? 'UPDATE devices SET last_seen = NOW() WHERE id = ?'
-        : 'UPDATE devices SET last_seen = NOW(), agent_version = ? WHERE id = ?'
+        ? 'UPDATE devices
+           SET last_seen = NOW()
+           WHERE id = ? AND (last_seen IS NULL OR last_seen < DATE_SUB(NOW(), INTERVAL 5 SECOND))'
+        : 'UPDATE devices
+           SET last_seen = NOW(), agent_version = ?
+           WHERE id = ?
+             AND (
+               last_seen IS NULL
+               OR last_seen < DATE_SUB(NOW(), INTERVAL 5 SECOND)
+               OR agent_version IS NULL
+               OR agent_version <> ?
+             )'
 );
 $agentVersion === ''
     ? $stmt->execute([(int) $device['id']])
-    : $stmt->execute([$agentVersion, (int) $device['id']]);
+    : $stmt->execute([$agentVersion, (int) $device['id'], $agentVersion]);
 
 $command = null;
 do {
@@ -116,14 +126,18 @@ $transport = [
     'pointer_max_events' => (int) ($liveConfig['pointer_max_events'] ?? 64),
     'pointer_release_timeout_ms' => (int) ($liveConfig['pointer_release_timeout_ms'] ?? 2500),
 ];
-$pdo->prepare('UPDATE devices SET transport_selected = ? WHERE id = ?')
-    ->execute([$transport['selected'], (int) $device['id']]);
+$pdo->prepare('UPDATE devices SET transport_selected = ? WHERE id = ? AND transport_selected <> ?')
+    ->execute([$transport['selected'], (int) $device['id'], $transport['selected']]);
+$pollAfterMs = effective_agent_poll_after_ms($device, $waitMs > 0);
+$transport['live_profile'] = normalize_live_profile((string) ($device['live_profile'] ?? 'flow'));
+$transport['live_active'] = !empty($device['live_active']);
+$transport['next_poll_ms'] = $pollAfterMs;
 
 if (!$command) {
     json_response([
         'ok' => true,
         'command' => null,
-        'poll_after_ms' => $waitMs > 0 ? 15 : 250,
+        'poll_after_ms' => $pollAfterMs,
         'transport' => $transport,
     ]);
 }
