@@ -131,6 +131,63 @@ function app_url(string $path = ''): string
     return ($base === '' ? '' : $base) . '/' . ltrim($path, '/');
 }
 
+function app_release_files(): array
+{
+    $serverRoot = dirname(__DIR__);
+    return [
+        'index.php' => $serverRoot . DIRECTORY_SEPARATOR . 'index.php',
+        'api/live.php' => $serverRoot . DIRECTORY_SEPARATOR . 'api' . DIRECTORY_SEPARATOR . 'live.php',
+        'api/poll.php' => $serverRoot . DIRECTORY_SEPARATOR . 'api' . DIRECTORY_SEPARATOR . 'poll.php',
+        'lib/config.php' => __DIR__ . DIRECTORY_SEPARATOR . 'config.php',
+        'lib/helpers.php' => __FILE__,
+        'assets/app.js' => $serverRoot . DIRECTORY_SEPARATOR . 'assets' . DIRECTORY_SEPARATOR . 'app.js',
+        'assets/style.css' => $serverRoot . DIRECTORY_SEPARATOR . 'assets' . DIRECTORY_SEPARATOR . 'style.css',
+    ];
+}
+
+function app_release(): string
+{
+    static $release = null;
+    if ($release !== null) {
+        return $release;
+    }
+
+    $configured = trim((string) (app_config()['app']['release'] ?? 'auto'));
+    if ($configured !== '' && strtolower($configured) !== 'auto') {
+        $release = preg_replace('/[^A-Za-z0-9._-]/', '-', $configured) ?: 'custom';
+        return $release;
+    }
+
+    $context = hash_init('sha256');
+    foreach (app_release_files() as $name => $path) {
+        hash_update($context, $name . ':');
+        if (is_file($path) && is_readable($path)) {
+            hash_update_file($context, $path);
+        } else {
+            hash_update($context, 'missing');
+        }
+    }
+    $release = substr(hash_final($context), 0, 12);
+    return $release;
+}
+
+function asset_url(string $path): string
+{
+    $serverRoot = realpath(dirname(__DIR__));
+    $candidate = realpath(dirname(__DIR__) . DIRECTORY_SEPARATOR . str_replace(['/', '\\'], DIRECTORY_SEPARATOR, ltrim($path, '/')));
+    $version = app_release();
+    if (
+        $serverRoot !== false
+        && $candidate !== false
+        && is_file($candidate)
+        && strpos($candidate, $serverRoot . DIRECTORY_SEPARATOR) === 0
+    ) {
+        $version = substr((string) hash_file('sha256', $candidate), 0, 12);
+    }
+
+    return app_url($path) . '?v=' . rawurlencode($version);
+}
+
 function redirect_to(string $path = ''): void
 {
     header('Location: ' . app_url($path), true, 303);

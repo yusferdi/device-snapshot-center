@@ -1,6 +1,6 @@
 {
   "name": "safe-device-agent",
-  "version": "1.6.3",
+  "version": "1.6.4",
   "type": "module",
   "private": true,
   "scripts": {

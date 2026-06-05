@@ -700,6 +700,15 @@ label:has(> select)::after {
   overflow-wrap: anywhere;
 }
 
+[data-live-dashboard][data-agent-state="online"] .live-status {
+  color: var(--success);
+}
+
+[data-live-dashboard][data-agent-state="offline"] .live-status,
+[data-live-dashboard][data-agent-state="error"] .live-status {
+  color: var(--danger);
+}
+
 .device-cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));

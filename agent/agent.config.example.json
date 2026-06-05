@@ -6,6 +6,7 @@
   "initialTransportMode": "poll",
   "longPollMs": 15000,
   "requestTimeoutMs": 30000,
+  "heartbeatLogMs": 30000,
   "reconnectMinMs": 250,
   "reconnectMaxMs": 10000,
   "logDirectory": "./logs",

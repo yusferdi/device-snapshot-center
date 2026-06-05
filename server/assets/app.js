@@ -8,6 +8,7 @@
   const csrfToken = root.dataset.csrfToken;
   const defaultCaptureIntervalMs = Math.max(800, Number(root.dataset.captureInterval || 1800));
   const defaultStatusIntervalMs = Math.max(500, Number(root.dataset.statusInterval || 900));
+  const idleStatusIntervalMs = Math.max(2000, Number(root.dataset.idleStatusInterval || 5000));
   const defaultPointerBatchMs = Math.max(24, Number(root.dataset.pointerBatch || 48));
   const pointerMaxEvents = Math.max(4, Number(root.dataset.pointerMaxEvents || 64));
   const speedProfiles = {
@@ -352,9 +353,17 @@
       setQueue(data);
       setTransport(data);
       setCapabilities(data);
-      const lastSeen = data.device?.last_seen ? `Last seen ${data.device.last_seen}` : "Device belum terlihat";
-      setStatus(lastSeen);
+      const ageSeconds = Number(data.device?.last_seen_age_seconds);
+      const agentVersion = data.device?.agent_version ? ` · v${data.device.agent_version}` : "";
+      if (data.device?.online) {
+        root.dataset.agentState = "online";
+        setStatus(`Agent connected${agentVersion} · ${Number.isFinite(ageSeconds) ? `${Math.round(ageSeconds)}s ago` : "active"}`);
+      } else {
+        root.dataset.agentState = "offline";
+        setStatus(data.device?.last_seen ? `Agent offline${agentVersion} · last seen ${data.device.last_seen}` : "Agent belum pernah terhubung");
+      }
     } catch (error) {
+      root.dataset.agentState = "error";
       setMode("Error", "error");
       setStatus(error.message);
     } finally {
@@ -409,10 +418,20 @@
     }
   }
 
+  async function runIdleStatusLoop(generation) {
+    await refreshStatus();
+    if (generation === liveLoopGeneration && !liveToggle?.checked && !document.hidden) {
+      statusTimer = window.setTimeout(() => runIdleStatusLoop(generation), idleStatusIntervalMs);
+    }
+  }
+
   function stopLive() {
     stopTimers();
     setMode("Idle", "idle");
     setStatus("Idle");
+    if (!document.hidden) {
+      runIdleStatusLoop(liveLoopGeneration);
+    }
   }
 
   function startLive() {
@@ -556,7 +575,7 @@
     if (liveToggle?.checked) {
       startLive();
     } else {
-      refreshStatus();
+      stopLive();
     }
   });
 
@@ -570,7 +589,7 @@
     if (visibleLiveWanted && liveToggle?.checked) {
       startLive();
     } else {
-      refreshStatus();
+      stopLive();
     }
   });
 
@@ -1184,6 +1203,5 @@
   updateSwitchAria();
   updateSpeedButtons();
   updateFullscreenState();
-  setMode("Idle", "idle");
-  refreshStatus();
+  stopLive();
 })();

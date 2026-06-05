@@ -35,10 +35,15 @@ Copy-Item .env.example .env
 - `APP_ADMIN_PASSWORD` atau `APP_ADMIN_PASSWORD_HASH`
 - `APP_ENROLLMENT_CODE`
 - `APP_BASE_PATH`
+- `APP_RELEASE` (`auto` menghitung identitas build dari file kritis)
 - `APP_UPLOAD_DIR`
 - `APP_MAX_UPLOAD_BYTES`
 
 Untuk testing lokal di folder proyek seperti kondisi sekarang, `APP_BASE_PATH=auto` sudah cukup.
+
+Setelah deploy, buka `https://domain/path/server/version.php`. Endpoint tersebut menampilkan release dan hash file kritis. Pastikan `assets/app.js`, `api/live.php`, dan `api/poll.php` berasal dari deployment yang sama. CSS dan JavaScript memakai query version otomatis agar browser tidak mempertahankan asset lama.
+
+Jika URL `version.php` malah menampilkan HTML website utama, file belum terdeploy ke document path yang benar atau rewrite hosting menangkap file yang tidak ditemukan.
 
 3. Buat database dan import schema:
 
@@ -64,6 +69,7 @@ Copy-Item agent\agent.config.example.json agent\agent.config.json
 
 - `serverUri`: `https://lppsp.ui.ac.id/any/server` (`serverUrl` masih diterima sebagai alias lama)
 - `initialTransportMode`: metode awal agent, default `poll`; dashboard dapat menggantinya tanpa restart.
+- `heartbeatLogMs`: interval heartbeat log saat agent idle, default `30000`.
 - `enrollmentCode`: samakan dengan `APP_ENROLLMENT_CODE` di `.env`
 - `deviceName`: nama yang muncul di dashboard
 - `logDirectory`: folder log yang boleh dibaca agent
@@ -80,7 +86,7 @@ npm.cmd install
 node agent.js
 ```
 
-Agent akan enroll sekali, menyimpan token di `agent/agent.state.json`, lalu memilih HTTP long-poll adaptif. Jika request panjang diblokir proxy, circuit breaker otomatis turun ke short-poll dan mencoba upgrade kembali tanpa restart agent.
+Agent akan enroll sekali, menyimpan token di `agent/agent.state.json`, lalu memulai HTTP polling dan mengikuti pilihan metode dari dashboard. Jika request panjang diblokir proxy, circuit breaker otomatis turun ke short-poll tanpa restart agent.
 
 ## Fitur Yang Ada
 
@@ -158,6 +164,8 @@ Dashboard menyimpan `transport_mode` per device dan metode efektif terakhir. `Po
 - `APP_AGENT_LONG_POLL_MS=15000`: durasi tunggu request agent; isi `0` untuk memaksa short-poll.
 - `APP_AGENT_POLL_PROBE_MS=120`: ritme server memeriksa command selama long-poll.
 - `APP_AGENT_LONG_POLL_ALLOW_CLI_SERVER=false`: melindungi PHP built-in server yang single-worker agar dashboard lokal tidak tertahan.
+- `APP_IDLE_STATUS_INTERVAL_MS=5000`: heartbeat status dashboard saat Live tidak aktif.
+- `APP_AGENT_ONLINE_WINDOW_SECONDS=60`: batas usia heartbeat agar device dianggap aktif.
 - `APP_LIVE_ACTIVITY_TTL_SECONDS=12`: berapa lama profil polling aktif dipertahankan setelah aktivitas dashboard.
 - `APP_AGENT_POLL_IDLE_MS=500`: ritme polling saat tidak ada sesi live.
 - `APP_AGENT_POLL_ECO_MS=180`, `APP_AGENT_POLL_FLOW_MS=75`, `APP_AGENT_POLL_BURST_MS=30`: ritme polling adaptif saat sesi live.

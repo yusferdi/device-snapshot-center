@@ -84,6 +84,7 @@ $envBool = static function (string $key, bool $default = false) use ($env): bool
 $config = [
     'app' => [
         'base_path' => $env('APP_BASE_PATH', 'auto'),
+        'release' => $env('APP_RELEASE', 'auto'),
         'session_name' => $env('APP_SESSION_NAME', 'dcc_session'),
         'secure_cookies' => $envBool('APP_SECURE_COOKIES', false),
         'behind_https_proxy' => $envBool('APP_BEHIND_HTTPS_PROXY', false),
@@ -110,6 +111,8 @@ $config = [
     'live' => [
         'capture_interval_ms' => max(800, $envInt('APP_LIVE_CAPTURE_INTERVAL_MS', 1800)),
         'status_interval_ms' => max(500, $envInt('APP_LIVE_STATUS_INTERVAL_MS', 900)),
+        'idle_status_interval_ms' => max(2000, min(60000, $envInt('APP_IDLE_STATUS_INTERVAL_MS', 5000))),
+        'agent_online_window_seconds' => max(15, min(600, $envInt('APP_AGENT_ONLINE_WINDOW_SECONDS', 60))),
         'frame_retention' => max(1, $envInt('APP_LIVE_FRAME_RETENTION', 12)),
         'agent_long_poll_ms' => min(25000, $envInt('APP_AGENT_LONG_POLL_MS', 15000)),
         'agent_poll_probe_ms' => max(50, min(1000, $envInt('APP_AGENT_POLL_PROBE_MS', 120))),

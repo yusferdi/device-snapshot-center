@@ -10,7 +10,7 @@ import robot from "robotjs";
 import screenshotDesktop from "screenshot-desktop";
 
 const execFileAsync = promisify(execFile);
-const AGENT_VERSION = "1.6.3";
+const AGENT_VERSION = "1.6.4";
 const CONFIG_PATH = path.resolve("agent.config.json");
 const EXAMPLE_CONFIG_PATH = path.resolve("agent.config.example.json");
 const STATE_PATH = path.resolve("agent.state.json");
@@ -92,6 +92,7 @@ async function loadConfig() {
     longPollMs: Math.round(clampNumber(config.longPollMs, 0, 25000, 15000)),
     initialTransportMode,
     requestTimeoutMs: Math.round(clampNumber(config.requestTimeoutMs, 5000, 120000, 30000)),
+    heartbeatLogMs: Math.round(clampNumber(config.heartbeatLogMs, 10000, 300000, 30000)),
     reconnectMinMs,
     reconnectMaxMs: Math.round(clampNumber(config.reconnectMaxMs, reconnectMinMs, 120000, 10000)),
     logDirectory: path.resolve(String(config.logDirectory || "./logs")),
@@ -1153,6 +1154,19 @@ let activeTransport = "";
 let longPollSuspendedUntil = 0;
 let consecutivePollErrors = 0;
 let preferredTransportMode = "poll";
+let successfulPolls = 0;
+let lastHeartbeatAt = 0;
+
+function logHeartbeat(config, nextPollMs) {
+  const now = Date.now();
+  if (now - lastHeartbeatAt < config.heartbeatLogMs) {
+    return;
+  }
+  lastHeartbeatAt = now;
+  console.log(
+    `[agent] heartbeat transport=${activeTransport || "connecting"} polls=${successfulPolls} next=${Math.round(nextPollMs)}ms background=${backgroundCommands.size}`
+  );
+}
 
 async function pollOnce(config, state) {
   const requestedWaitMs = preferredTransportMode === "long-poll" && Date.now() >= longPollSuspendedUntil
@@ -1219,6 +1233,8 @@ async function main() {
       const nextPollMs = await pollOnce(config, state);
       reconnectDelayMs = config.reconnectMinMs;
       consecutivePollErrors = 0;
+      successfulPolls += 1;
+      logHeartbeat(config, nextPollMs);
       if (nextPollMs > 0) {
         await sleep(nextPollMs);
       }

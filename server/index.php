@@ -292,7 +292,11 @@ $liveConfig = app_config()['live'] ?? [];
 if ($loggedIn) {
     try {
         ensure_runtime_schema();
-        $devices = db()->query('SELECT * FROM devices ORDER BY last_seen DESC, id DESC')->fetchAll();
+        $devices = db()->query(
+            'SELECT *, TIMESTAMPDIFF(SECOND, last_seen, NOW()) AS last_seen_age_seconds
+             FROM devices
+             ORDER BY last_seen DESC, id DESC'
+        )->fetchAll();
         $commands = db()->query(
             'SELECT c.*, d.name AS device_name, d.device_uid
              FROM commands c
@@ -323,12 +327,15 @@ if ($loggedIn) {
 $primaryDeviceId = $devices ? (int) $devices[0]['id'] : 0;
 $activeDeviceCount = 0;
 $favoriteDeviceCount = 0;
+$onlineWindowSeconds = (int) ($liveConfig['agent_online_window_seconds'] ?? 60);
 foreach ($devices as $device) {
     if (!empty($device['favorite'])) {
         $favoriteDeviceCount++;
     }
-    $lastSeenTs = !empty($device['last_seen']) ? strtotime((string) $device['last_seen']) : false;
-    if ($lastSeenTs !== false && $lastSeenTs >= time() - 300) {
+    $lastSeenAgeSeconds = $device['last_seen_age_seconds'] === null
+        ? null
+        : max(0, (int) $device['last_seen_age_seconds']);
+    if ($lastSeenAgeSeconds !== null && $lastSeenAgeSeconds <= $onlineWindowSeconds) {
         $activeDeviceCount++;
     }
 }
@@ -349,16 +356,18 @@ if ($latestFileList && !empty($latestFileList['result_json'])) {
 }
 
 apply_security_headers();
+header('X-App-Release: ' . app_release());
 ?>
 <!doctype html>
 <html lang="id">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="app-release" content="<?= h(app_release()) ?>">
     <title>Device Snapshot Center</title>
-    <link rel="stylesheet" href="<?= h(app_url('assets/style.css')) ?>">
+    <link rel="stylesheet" href="<?= h(asset_url('assets/style.css')) ?>">
     <?php if ($loggedIn): ?>
-        <script src="<?= h(app_url('assets/app.js')) ?>" defer></script>
+        <script src="<?= h(asset_url('assets/app.js')) ?>" defer></script>
     <?php endif; ?>
 </head>
 <body>
@@ -428,6 +437,7 @@ apply_security_headers();
                 data-csrf-token="<?= h(csrf_token()) ?>"
                 data-capture-interval="<?= (int) ($liveConfig['capture_interval_ms'] ?? 1800) ?>"
                 data-status-interval="<?= (int) ($liveConfig['status_interval_ms'] ?? 900) ?>"
+                data-idle-status-interval="<?= (int) ($liveConfig['idle_status_interval_ms'] ?? 5000) ?>"
                 data-pointer-batch="<?= (int) ($liveConfig['pointer_batch_ms'] ?? 48) ?>"
                 data-pointer-max-events="<?= (int) ($liveConfig['pointer_max_events'] ?? 64) ?>"
             >

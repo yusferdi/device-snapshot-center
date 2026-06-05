@@ -210,7 +210,7 @@ if ($deviceId <= 0) {
 
 $stmt = db()->prepare(
     'SELECT id, name, hostname, platform, agent_version, transport_mode, transport_selected,
-            live_profile, live_until, last_seen
+            live_profile, live_until, last_seen, TIMESTAMPDIFF(SECOND, last_seen, NOW()) AS last_seen_age_seconds
      FROM devices
      WHERE id = ?
      LIMIT 1'
@@ -220,6 +220,11 @@ $device = $stmt->fetch();
 if (!$device) {
     json_response(['ok' => false, 'error' => 'Device tidak ditemukan'], 404);
 }
+
+$lastSeenAgeSeconds = $device['last_seen_age_seconds'] === null
+    ? null
+    : max(0, (int) $device['last_seen_age_seconds']);
+$onlineWindowSeconds = (int) ((app_config()['live'] ?? [])['agent_online_window_seconds'] ?? 60);
 
 $liveProfile = normalize_live_profile((string) ($body['profile'] ?? ($device['live_profile'] ?? 'flow')));
 if (!empty($body['live_active'])) {
@@ -332,7 +337,10 @@ json_response([
         'name' => $device['name'],
         'hostname' => $device['hostname'],
         'platform' => $device['platform'],
+        'agent_version' => $device['agent_version'],
         'last_seen' => $device['last_seen'],
+        'last_seen_age_seconds' => $lastSeenAgeSeconds,
+        'online' => $lastSeenAgeSeconds !== null && $lastSeenAgeSeconds <= $onlineWindowSeconds,
     ],
     'pending_capture' => $pending['capture_screen'],
     'pending_click' => $pending['mouse_click'],
