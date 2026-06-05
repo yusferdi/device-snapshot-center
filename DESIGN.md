@@ -59,6 +59,9 @@ Device Snapshot Center should feel like a compact remote-operations console: cal
 - PHP session locks are released immediately after live authentication so frame delivery and input requests can run concurrently.
 - Polling cadence follows live activity and Eco/Flow/Burst profiles, while idle devices back off to reduce database and network load.
 - Identical live frames are hash-deduplicated before upload; freshness uses the latest capture observation rather than only the latest artifact.
+- The agent screen pipeline is single-flight, and queued live captures are compacted to the newest request before they can create stale-frame backlog.
+- Artifact transfers have explicit deadlines, and command completion is retried idempotently to prevent a transient network failure from leaving the screen pipeline stuck.
+- Idle long-poll probes avoid database transactions; transport preference is rechecked on a bounded cadence instead of on every probe.
 - A transport failure must release active mouse buttons automatically.
 - A transport failure, browser blur, or panic-off must release active keyboard keys automatically.
 - Animation should be short, functional, and disabled through `prefers-reduced-motion`.

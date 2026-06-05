@@ -29,12 +29,43 @@ $stmt = db()->prepare(
 $stmt->execute([$status, $resultText, $resultJson, $errorText, $commandId, (int) $device['id']]);
 
 if ($stmt->rowCount() < 1) {
+    $stmt = db()->prepare('SELECT status FROM commands WHERE id = ? AND device_id = ? LIMIT 1');
+    $stmt->execute([$commandId, (int) $device['id']]);
+    if ((string) $stmt->fetchColumn() === $status) {
+        json_response(['ok' => true, 'already_completed' => true]);
+    }
     json_response(['ok' => false, 'error' => 'Task not found or already completed'], 404);
 }
 
 $stmt = db()->prepare('SELECT action FROM commands WHERE id = ? AND device_id = ? LIMIT 1');
 $stmt->execute([$commandId, (int) $device['id']]);
 $completedCommand = $stmt->fetch();
+$captureResult = is_array($body['result_json'] ?? null) ? $body['result_json'] : [];
+$isCaptureObservation = $status === 'succeeded'
+    && ($completedCommand['action'] ?? '') === 'capture_screen'
+    && (!empty($captureResult['unchanged']) || !empty($captureResult['skipped']));
+if ($isCaptureObservation) {
+    db()->prepare(
+        "UPDATE commands
+         SET completed_at = NOW()
+         WHERE id = (
+           SELECT latest.id
+           FROM (
+             SELECT id
+             FROM commands
+             WHERE device_id = ?
+               AND action = 'capture_screen'
+               AND status = 'succeeded'
+               AND artifact_path IS NOT NULL
+             ORDER BY id DESC
+             LIMIT 1
+           ) latest
+         )"
+    )->execute([(int) $device['id']]);
+    $cleaned = prune_empty_screen_captures((int) $device['id']);
+    json_response(['ok' => true, 'coalesced' => true, 'cleaned' => $cleaned]);
+}
+
 if ($status === 'succeeded' && is_ephemeral_action((string) ($completedCommand['action'] ?? ''))) {
     db()->prepare('DELETE FROM commands WHERE id = ? AND device_id = ?')->execute([$commandId, (int) $device['id']]);
     json_response(['ok' => true]);

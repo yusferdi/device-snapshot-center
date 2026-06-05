@@ -45,6 +45,14 @@ Setelah deploy, buka `https://domain/path/server/version.php`. Endpoint tersebut
 
 Jika URL `version.php` malah menampilkan HTML website utama, file belum terdeploy ke document path yang benar atau rewrite hosting menangkap file yang tidak ditemukan.
 
+Verifikasi deployment lengkap dari root proyek:
+
+```powershell
+node scripts/verify-deployment.mjs https://lppsp.ui.ac.id/any/server
+```
+
+Lihat [DEPLOYMENT.md](DEPLOYMENT.md) untuk release checklist, OPcache, dan rollback.
+
 3. Buat database dan import schema:
 
 ```sql
@@ -105,6 +113,8 @@ Agent akan enroll sekali, menyimpan token di `agent/agent.state.json`, lalu memu
 - Endpoint live dan artifact melepaskan PHP session lock setelah autentikasi, sehingga frame, status, mouse, dan keyboard dapat diproses paralel pada PHP-FPM/Apache.
 - Polling agent adaptif: idle melambat, sedangkan sesi Eco/Flow/Burst mempercepat command pickup sesuai profil aktif.
 - Frame live identik dideteksi melalui SHA-256 dan tidak di-upload ulang; freshness tetap mengikuti capture terbaru.
+- Capture layar memakai single-flight pipeline di agent; frame live yang menumpuk dikompaksi agar screenshot/upload tidak berjalan paralel tanpa batas.
+- Upload/download artifact memiliki deadline, sedangkan completion command mencoba ulang secara idempotent saat jaringan terganggu.
 - Metode koneksi dapat dipilih per-device dari dashboard: `Polling`, `Long poll`, atau `Auto`, tanpa restart agent. Agent mulai dengan `Polling`.
 - Grid overlay opsional untuk membantu validasi alignment layar dan koordinat klik.
 - Klik mouse jarak jauh melalui action `mouse_click` untuk left-click, double-click, dan right-click, hanya jika `allowRemoteControl` aktif di config agent.
@@ -163,6 +173,7 @@ Dashboard menyimpan `transport_mode` per device dan metode efektif terakhir. `Po
 
 - `APP_AGENT_LONG_POLL_MS=15000`: durasi tunggu request agent; isi `0` untuk memaksa short-poll.
 - `APP_AGENT_POLL_PROBE_MS=120`: ritme server memeriksa command selama long-poll.
+- `APP_AGENT_MODE_RECHECK_MS=1000`: interval pemeriksaan perubahan metode koneksi saat long-poll.
 - `APP_AGENT_LONG_POLL_ALLOW_CLI_SERVER=false`: melindungi PHP built-in server yang single-worker agar dashboard lokal tidak tertahan.
 - `APP_IDLE_STATUS_INTERVAL_MS=5000`: heartbeat status dashboard saat Live tidak aktif.
 - `APP_AGENT_ONLINE_WINDOW_SECONDS=60`: batas usia heartbeat agar device dianggap aktif.

@@ -136,12 +136,20 @@ function app_release_files(): array
     $serverRoot = dirname(__DIR__);
     return [
         'index.php' => $serverRoot . DIRECTORY_SEPARATOR . 'index.php',
+        'artifact.php' => $serverRoot . DIRECTORY_SEPARATOR . 'artifact.php',
+        'version.php' => $serverRoot . DIRECTORY_SEPARATOR . 'version.php',
+        'api/artifact-download.php' => $serverRoot . DIRECTORY_SEPARATOR . 'api' . DIRECTORY_SEPARATOR . 'artifact-download.php',
+        'api/complete.php' => $serverRoot . DIRECTORY_SEPARATOR . 'api' . DIRECTORY_SEPARATOR . 'complete.php',
+        'api/enroll.php' => $serverRoot . DIRECTORY_SEPARATOR . 'api' . DIRECTORY_SEPARATOR . 'enroll.php',
         'api/live.php' => $serverRoot . DIRECTORY_SEPARATOR . 'api' . DIRECTORY_SEPARATOR . 'live.php',
         'api/poll.php' => $serverRoot . DIRECTORY_SEPARATOR . 'api' . DIRECTORY_SEPARATOR . 'poll.php',
+        'api/upload.php' => $serverRoot . DIRECTORY_SEPARATOR . 'api' . DIRECTORY_SEPARATOR . 'upload.php',
         'lib/config.php' => __DIR__ . DIRECTORY_SEPARATOR . 'config.php',
+        'lib/db.php' => __DIR__ . DIRECTORY_SEPARATOR . 'db.php',
         'lib/helpers.php' => __FILE__,
         'assets/app.js' => $serverRoot . DIRECTORY_SEPARATOR . 'assets' . DIRECTORY_SEPARATOR . 'app.js',
         'assets/style.css' => $serverRoot . DIRECTORY_SEPARATOR . 'assets' . DIRECTORY_SEPARATOR . 'style.css',
+        'schema.sql' => $serverRoot . DIRECTORY_SEPARATOR . 'schema.sql',
     ];
 }
 
@@ -655,6 +663,63 @@ function pending_action_flags(int $deviceId): array
     return $flags;
 }
 
+function compact_queued_screen_captures(int $deviceId): int
+{
+    $pdo = db();
+    $pdo->prepare(
+        "DELETE audit_events
+         FROM audit_events
+         JOIN commands stale ON stale.id = audit_events.command_id
+         JOIN commands newer
+           ON newer.device_id = stale.device_id
+          AND newer.action = 'capture_screen'
+          AND newer.status = 'queued'
+          AND newer.id > stale.id
+         WHERE stale.device_id = ?
+           AND stale.action = 'capture_screen'
+           AND stale.status = 'queued'"
+    )->execute([$deviceId]);
+
+    $stmt = $pdo->prepare(
+        "DELETE stale
+         FROM commands stale
+         JOIN commands newer
+           ON newer.device_id = stale.device_id
+          AND newer.action = 'capture_screen'
+          AND newer.status = 'queued'
+          AND newer.id > stale.id
+         WHERE stale.device_id = ?
+           AND stale.action = 'capture_screen'
+           AND stale.status = 'queued'"
+    );
+    $stmt->execute([$deviceId]);
+    return $stmt->rowCount();
+}
+
+function prune_empty_screen_captures(int $deviceId): int
+{
+    $pdo = db();
+    $pdo->prepare(
+        "DELETE audit_events
+         FROM audit_events
+         JOIN commands capture ON capture.id = audit_events.command_id
+         WHERE capture.device_id = ?
+           AND capture.action = 'capture_screen'
+           AND capture.status = 'succeeded'
+           AND capture.artifact_path IS NULL"
+    )->execute([$deviceId]);
+
+    $stmt = $pdo->prepare(
+        "DELETE FROM commands
+         WHERE device_id = ?
+           AND action = 'capture_screen'
+           AND status = 'succeeded'
+           AND artifact_path IS NULL"
+    );
+    $stmt->execute([$deviceId]);
+    return $stmt->rowCount();
+}
+
 function queue_device_command(int $deviceId, string $action, ?array $payload = null): int
 {
     if (!array_key_exists($action, allowed_actions())) {
@@ -667,7 +732,10 @@ function queue_device_command(int $deviceId, string $action, ?array $payload = n
     );
     $stmt->execute([$deviceId, $action, $payloadJson]);
     $commandId = (int) db()->lastInsertId();
-    if (!is_ephemeral_action($action)) {
+    $isLiveCapture = $action === 'capture_screen' && !empty($payload['dedupe']);
+    if ($isLiveCapture) {
+        compact_queued_screen_captures($deviceId);
+    } elseif (!is_ephemeral_action($action)) {
         audit_event($deviceId, $commandId, 'command_created', ['action' => $action]);
     }
 

@@ -10,7 +10,7 @@ import robot from "robotjs";
 import screenshotDesktop from "screenshot-desktop";
 
 const execFileAsync = promisify(execFile);
-const AGENT_VERSION = "1.6.4";
+const AGENT_VERSION = "1.7.0";
 const CONFIG_PATH = path.resolve("agent.config.json");
 const EXAMPLE_CONFIG_PATH = path.resolve("agent.config.example.json");
 const STATE_PATH = path.resolve("agent.state.json");
@@ -153,6 +153,22 @@ async function apiJson(config, endpoint, body, token = null, options = {}) {
   }
 
   return data;
+}
+
+async function fetchWithTimeout(url, options, timeoutMs, label) {
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(new Error(`${label} timed out after ${timeoutMs}ms.`)),
+    timeoutMs
+  );
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function enrollIfNeeded(config, state) {
@@ -332,11 +348,16 @@ async function pullTransferFile(config, state, commandId, payload) {
 }
 
 async function downloadCommandArtifact(config, state, commandId) {
-  const response = await fetch(`${config.serverUrl}/api/artifact-download.php?command_id=${encodeURIComponent(String(commandId))}`, {
-    headers: {
-      Authorization: `Bearer ${state.deviceToken}`,
+  const response = await fetchWithTimeout(
+    `${config.serverUrl}/api/artifact-download.php?command_id=${encodeURIComponent(String(commandId))}`,
+    {
+      headers: {
+        Authorization: `Bearer ${state.deviceToken}`,
+      },
     },
-  });
+    Math.max(config.requestTimeoutMs, 60000),
+    "Artifact download"
+  );
   if (!response.ok) {
     throw new Error(`Server artifact download failed (${response.status})`);
   }
@@ -420,13 +441,18 @@ async function uploadArtifactBuffer(config, state, commandId, buffer, fileName, 
   form.append("command_id", String(commandId));
   form.append("artifact", new Blob([buffer], { type: mimeType }), fileName);
 
-  const response = await fetch(`${config.serverUrl}/api/upload.php`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${state.deviceToken}`,
+  const response = await fetchWithTimeout(
+    `${config.serverUrl}/api/upload.php`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${state.deviceToken}`,
+      },
+      body: form,
     },
-    body: form,
-  });
+    Math.max(config.requestTimeoutMs, 60000),
+    "Artifact upload"
+  );
 
   const text = await response.text();
   let data;
@@ -940,10 +966,25 @@ async function keyboardState(config, payload) {
 }
 
 async function complete(config, state, commandId, payload) {
-  await apiJson(config, "/api/complete.php", {
-    command_id: commandId,
-    ...payload,
-  }, state.deviceToken);
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await apiJson(config, "/api/complete.php", {
+        command_id: commandId,
+        ...payload,
+      }, state.deviceToken);
+      return;
+    } catch (error) {
+      if (/Task not found or already completed/i.test(error.message)) {
+        return;
+      }
+      lastError = error;
+      if (attempt < 3) {
+        await sleep(200 * (2 ** (attempt - 1)));
+      }
+    }
+  }
+  throw lastError;
 }
 
 async function handleCommand(config, state, command) {
@@ -1137,6 +1178,7 @@ async function handleCommand(config, state, command) {
 
 const BACKGROUND_COMMAND_ACTIONS = new Set(["capture_screen", "record_session"]);
 const backgroundCommands = new Map();
+let activeScreenCommand = null;
 
 async function executeCommand(config, state, command) {
   try {
@@ -1200,12 +1242,40 @@ async function pollOnce(config, state) {
   const commandId = Number(result.command.id);
   const action = String(result.command.action);
   if (BACKGROUND_COMMAND_ACTIONS.has(action)) {
+    if (activeScreenCommand) {
+      const busy = {
+        active_command_id: activeScreenCommand.id,
+        active_action: activeScreenCommand.action,
+      };
+      if (action === "capture_screen") {
+        await complete(config, state, commandId, {
+          status: "succeeded",
+          result_json: {
+            skipped: true,
+            reason: "screen_pipeline_busy",
+            ...busy,
+          },
+        });
+      } else {
+        await complete(config, state, commandId, {
+          status: "failed",
+          error_text: `Screen pipeline is busy with ${activeScreenCommand.action} #${activeScreenCommand.id}. Retry recording.`,
+          result_json: busy,
+        });
+      }
+      return 0;
+    }
+
+    activeScreenCommand = { id: commandId, action };
     const task = executeCommand(config, state, result.command)
       .catch((error) => {
         console.error(`[agent] background command #${commandId} completion failed: ${error.message}`);
       })
       .finally(() => {
         backgroundCommands.delete(commandId);
+        if (activeScreenCommand?.id === commandId) {
+          activeScreenCommand = null;
+        }
       });
     backgroundCommands.set(commandId, task);
     return 0;

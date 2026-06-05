@@ -116,6 +116,7 @@ $config = [
         'frame_retention' => max(1, $envInt('APP_LIVE_FRAME_RETENTION', 12)),
         'agent_long_poll_ms' => min(25000, $envInt('APP_AGENT_LONG_POLL_MS', 15000)),
         'agent_poll_probe_ms' => max(50, min(1000, $envInt('APP_AGENT_POLL_PROBE_MS', 120))),
+        'agent_mode_recheck_ms' => max(250, min(5000, $envInt('APP_AGENT_MODE_RECHECK_MS', 1000))),
         'allow_cli_server_long_poll' => $envBool('APP_AGENT_LONG_POLL_ALLOW_CLI_SERVER', false),
         'activity_ttl_seconds' => max(3, min(60, $envInt('APP_LIVE_ACTIVITY_TTL_SECONDS', 12))),
         'agent_poll_idle_ms' => max(100, min(5000, $envInt('APP_AGENT_POLL_IDLE_MS', 500))),
