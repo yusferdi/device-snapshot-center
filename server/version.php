@@ -17,7 +17,7 @@ header('X-App-Release: ' . app_release());
 json_response([
     'ok' => true,
     'app' => 'Device Snapshot Center',
-    'contract_version' => 2,
+    'contract_version' => 3,
     'release' => app_release(),
     'base_path' => app_base_path(),
     'features' => [
@@ -26,6 +26,8 @@ json_response([
         'capture_queue_compaction' => true,
         'deployment_verification' => true,
         'idle_agent_status' => true,
+        'agent_boot_recovery' => true,
+        'live_command_expiry' => true,
     ],
     'files' => $files,
     'generated_at' => gmdate('c'),

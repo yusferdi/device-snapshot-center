@@ -244,6 +244,33 @@ function table_columns(string $table): array
     return $columns;
 }
 
+function table_indexes(string $table): array
+{
+    $stmt = db()->query('SHOW INDEX FROM `' . str_replace('`', '', $table) . '`');
+    $indexes = [];
+    foreach ($stmt->fetchAll() as $index) {
+        $indexes[(string) $index['Key_name']] = true;
+    }
+
+    return $indexes;
+}
+
+function apply_runtime_schema_change(string $sql, callable $isApplied): void
+{
+    try {
+        db()->exec($sql);
+    } catch (Throwable $error) {
+        if (!$isApplied()) {
+            throw $error;
+        }
+    }
+}
+
+function runtime_schema_version(): int
+{
+    return 3;
+}
+
 function ensure_runtime_schema(): void
 {
     static $done = false;
@@ -251,8 +278,29 @@ function ensure_runtime_schema(): void
         return;
     }
 
+    $targetVersion = runtime_schema_version();
+    try {
+        $stmt = db()->prepare("SELECT meta_value FROM app_meta WHERE meta_key = 'schema_version' LIMIT 1");
+        $stmt->execute();
+        if ((int) $stmt->fetchColumn() >= $targetVersion) {
+            $done = true;
+            return;
+        }
+    } catch (Throwable $error) {
+        db()->exec(
+            'CREATE TABLE IF NOT EXISTS app_meta (
+               meta_key VARCHAR(80) NOT NULL,
+               meta_value VARCHAR(255) NOT NULL,
+               updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+               PRIMARY KEY (meta_key)
+             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+        );
+    }
+
     $columns = table_columns('devices');
     $updates = [
+        'agent_boot_id' => "ALTER TABLE devices ADD COLUMN agent_boot_id VARCHAR(64) DEFAULT NULL AFTER agent_version",
+        'agent_boot_started_at' => "ALTER TABLE devices ADD COLUMN agent_boot_started_at BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER agent_boot_id",
         'favorite' => "ALTER TABLE devices ADD COLUMN favorite TINYINT(1) NOT NULL DEFAULT 0 AFTER last_seen",
         'tags' => "ALTER TABLE devices ADD COLUMN tags VARCHAR(255) NOT NULL DEFAULT '' AFTER favorite",
         'permission_profile' => "ALTER TABLE devices ADD COLUMN permission_profile VARCHAR(32) NOT NULL DEFAULT 'full' AFTER tags",
@@ -264,10 +312,34 @@ function ensure_runtime_schema(): void
 
     foreach ($updates as $column => $sql) {
         if (empty($columns[$column])) {
-            db()->exec($sql);
+            apply_runtime_schema_change(
+                $sql,
+                static fn (): bool => isset(table_columns('devices')[$column])
+            );
         }
     }
 
+    $commandColumns = table_columns('commands');
+    if (empty($commandColumns['expires_at'])) {
+        apply_runtime_schema_change(
+            'ALTER TABLE commands ADD COLUMN expires_at DATETIME DEFAULT NULL AFTER artifact_mime',
+            static fn (): bool => isset(table_columns('commands')['expires_at'])
+        );
+    }
+    $commandIndexes = table_indexes('commands');
+    if (empty($commandIndexes['idx_commands_device_expiry'])) {
+        apply_runtime_schema_change(
+            'ALTER TABLE commands ADD KEY idx_commands_device_expiry (device_id, status, expires_at, id)',
+            static fn (): bool => isset(table_indexes('commands')['idx_commands_device_expiry'])
+        );
+    }
+
+    $stmt = db()->prepare(
+        "INSERT INTO app_meta (meta_key, meta_value)
+         VALUES ('schema_version', ?)
+         ON DUPLICATE KEY UPDATE meta_value = VALUES(meta_value)"
+    );
+    $stmt->execute([(string) $targetVersion]);
     $done = true;
 }
 
@@ -464,6 +536,98 @@ function is_ephemeral_action(string $action): bool
     return in_array($action, ['mouse_input', 'keyboard_state'], true);
 }
 
+function claim_agent_boot(int $deviceId, string $bootId, int $bootStartedAt): array
+{
+    if ($bootId === '' || $bootStartedAt <= 0) {
+        return ['accepted' => true, 'changed' => false, 'recovered' => 0, 'discarded_live' => 0];
+    }
+
+    $pdo = db();
+    $pdo->beginTransaction();
+    try {
+        $stmt = $pdo->prepare(
+            'SELECT agent_boot_id,
+                    agent_boot_started_at,
+                    TIMESTAMPDIFF(SECOND, last_seen, NOW()) AS last_seen_age_seconds
+             FROM devices
+             WHERE id = ?
+             LIMIT 1
+             FOR UPDATE'
+        );
+        $stmt->execute([$deviceId]);
+        $current = $stmt->fetch();
+        if (!$current) {
+            $pdo->rollBack();
+            return ['accepted' => false, 'changed' => false, 'recovered' => 0, 'discarded_live' => 0];
+        }
+
+        $currentBootId = (string) ($current['agent_boot_id'] ?? '');
+        $currentBootStartedAt = (int) ($current['agent_boot_started_at'] ?? 0);
+        $lastSeenAgeSeconds = $current['last_seen_age_seconds'] === null
+            ? null
+            : max(0, (int) $current['last_seen_age_seconds']);
+        $onlineWindowSeconds = (int) ((app_config()['live'] ?? [])['agent_online_window_seconds'] ?? 60);
+        if ($currentBootId === $bootId) {
+            $pdo->commit();
+            return ['accepted' => true, 'changed' => false, 'recovered' => 0, 'discarded_live' => 0];
+        }
+        if (
+            $currentBootStartedAt > $bootStartedAt
+            && $lastSeenAgeSeconds !== null
+            && $lastSeenAgeSeconds <= $onlineWindowSeconds
+        ) {
+            $pdo->commit();
+            return ['accepted' => false, 'changed' => false, 'recovered' => 0, 'discarded_live' => 0];
+        }
+
+        $stmt = $pdo->prepare(
+            "DELETE FROM commands
+             WHERE device_id = ?
+               AND status = 'running'
+               AND (expires_at IS NOT NULL OR action IN ('mouse_input', 'keyboard_state'))"
+        );
+        $stmt->execute([$deviceId]);
+        $discardedLive = $stmt->rowCount();
+
+        $stmt = $pdo->prepare(
+            "UPDATE commands
+             SET status = 'failed',
+                 error_text = 'Agent restarted before command completed',
+                 completed_at = NOW()
+             WHERE device_id = ? AND status = 'running'"
+        );
+        $stmt->execute([$deviceId]);
+        $recovered = $stmt->rowCount();
+
+        $stmt = $pdo->prepare(
+            'UPDATE devices
+             SET agent_boot_id = ?, agent_boot_started_at = ?
+             WHERE id = ?'
+        );
+        $stmt->execute([$bootId, $bootStartedAt, $deviceId]);
+        $pdo->commit();
+
+        if ($recovered > 0 || $discardedLive > 0) {
+            audit_event($deviceId, null, 'agent_boot_recovered', [
+                'recovered_commands' => $recovered,
+                'discarded_live_commands' => $discardedLive,
+            ]);
+        }
+
+        return [
+            'accepted' => true,
+            'changed' => true,
+            'recovered' => $recovered,
+            'discarded_live' => $discardedLive,
+        ];
+    } catch (Throwable $error) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $error;
+    }
+}
+
 function transport_modes(): array
 {
     return [
@@ -632,6 +796,7 @@ function has_pending_action(int $deviceId, string $action): bool
          WHERE device_id = ?
            AND action = ?
            AND status IN ('queued', 'running')
+           AND (expires_at IS NULL OR expires_at > NOW())
          LIMIT 1"
     );
     $stmt->execute([$deviceId, $action]);
@@ -649,6 +814,7 @@ function pending_action_flags(int $deviceId): array
          FROM commands
          WHERE device_id = ?
            AND status IN ('queued', 'running')
+           AND (expires_at IS NULL OR expires_at > NOW())
            AND action IN ({$placeholders})
          GROUP BY action"
     );
@@ -720,22 +886,44 @@ function prune_empty_screen_captures(int $deviceId): int
     return $stmt->rowCount();
 }
 
-function queue_device_command(int $deviceId, string $action, ?array $payload = null): int
+function prune_expired_commands(int $deviceId): int
+{
+    $stmt = db()->prepare(
+        "DELETE FROM commands
+         WHERE device_id = ?
+           AND status = 'queued'
+           AND expires_at IS NOT NULL
+           AND expires_at <= NOW()"
+    );
+    $stmt->execute([$deviceId]);
+    return $stmt->rowCount();
+}
+
+function queue_device_command(int $deviceId, string $action, ?array $payload = null, ?int $ttlSeconds = null): int
 {
     if (!array_key_exists($action, allowed_actions())) {
         throw new RuntimeException('Action tidak valid.');
     }
 
     $payloadJson = $payload === null ? null : json_encode($payload, JSON_UNESCAPED_SLASHES);
-    $stmt = db()->prepare(
-        'INSERT INTO commands (device_id, action, payload_json) VALUES (?, ?, ?)'
-    );
-    $stmt->execute([$deviceId, $action, $payloadJson]);
+    $ttlSeconds = $ttlSeconds === null ? null : max(1, min(300, $ttlSeconds));
+    if ($ttlSeconds === null) {
+        $stmt = db()->prepare(
+            'INSERT INTO commands (device_id, action, payload_json) VALUES (?, ?, ?)'
+        );
+        $stmt->execute([$deviceId, $action, $payloadJson]);
+    } else {
+        $stmt = db()->prepare(
+            "INSERT INTO commands (device_id, action, payload_json, expires_at)
+             VALUES (?, ?, ?, DATE_ADD(NOW(), INTERVAL {$ttlSeconds} SECOND))"
+        );
+        $stmt->execute([$deviceId, $action, $payloadJson]);
+    }
     $commandId = (int) db()->lastInsertId();
     $isLiveCapture = $action === 'capture_screen' && !empty($payload['dedupe']);
     if ($isLiveCapture) {
         compact_queued_screen_captures($deviceId);
-    } elseif (!is_ephemeral_action($action)) {
+    } elseif ($ttlSeconds === null && !is_ephemeral_action($action)) {
         audit_event($deviceId, $commandId, 'command_created', ['action' => $action]);
     }
 

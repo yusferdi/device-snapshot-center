@@ -37,7 +37,7 @@ if ($stmt->rowCount() < 1) {
     json_response(['ok' => false, 'error' => 'Task not found or already completed'], 404);
 }
 
-$stmt = db()->prepare('SELECT action FROM commands WHERE id = ? AND device_id = ? LIMIT 1');
+$stmt = db()->prepare('SELECT action, expires_at FROM commands WHERE id = ? AND device_id = ? LIMIT 1');
 $stmt->execute([$commandId, (int) $device['id']]);
 $completedCommand = $stmt->fetch();
 $captureResult = is_array($body['result_json'] ?? null) ? $body['result_json'] : [];
@@ -66,7 +66,13 @@ if ($isCaptureObservation) {
     json_response(['ok' => true, 'coalesced' => true, 'cleaned' => $cleaned]);
 }
 
-if ($status === 'succeeded' && is_ephemeral_action((string) ($completedCommand['action'] ?? ''))) {
+if (
+    $status === 'succeeded'
+    && (
+        is_ephemeral_action((string) ($completedCommand['action'] ?? ''))
+        || !empty($completedCommand['expires_at'])
+    )
+) {
     db()->prepare('DELETE FROM commands WHERE id = ? AND device_id = ?')->execute([$commandId, (int) $device['id']]);
     json_response(['ok' => true]);
 }

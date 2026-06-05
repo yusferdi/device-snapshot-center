@@ -14,6 +14,7 @@ if (!is_admin_logged_in()) {
 $body = read_json_body();
 require_csrf_value((string) ($body['csrf_token'] ?? ($_SERVER['HTTP_X_CSRF_TOKEN'] ?? '')));
 release_session_lock();
+ensure_runtime_schema();
 
 function live_keyboard_payload(array $body): array
 {
@@ -164,16 +165,19 @@ function live_pointer_payload(array $body): array
     ];
 }
 
-function queue_pointer_command(int $deviceId, array $payload): int
+function queue_pointer_command(int $deviceId, array $payload, int $ttlSeconds): int
 {
     if (($payload['kind'] ?? '') !== 'move') {
-        return queue_device_command($deviceId, 'mouse_input', $payload);
+        return queue_device_command($deviceId, 'mouse_input', $payload, $ttlSeconds);
     }
 
     $stmt = db()->prepare(
         "SELECT id, payload_json
          FROM commands
-         WHERE device_id = ? AND action = 'mouse_input' AND status = 'queued'
+         WHERE device_id = ?
+           AND action = 'mouse_input'
+           AND status = 'queued'
+           AND (expires_at IS NULL OR expires_at > NOW())
          ORDER BY id DESC
          LIMIT 1"
     );
@@ -185,7 +189,10 @@ function queue_pointer_command(int $deviceId, array $payload): int
         }
 
         $update = db()->prepare(
-            "UPDATE commands SET payload_json = ?, created_at = NOW()
+            "UPDATE commands
+             SET payload_json = ?,
+                 created_at = NOW(),
+                 expires_at = DATE_ADD(NOW(), INTERVAL {$ttlSeconds} SECOND)
              WHERE id = ? AND device_id = ? AND status = 'queued'"
         );
         $update->execute([
@@ -198,7 +205,7 @@ function queue_pointer_command(int $deviceId, array $payload): int
         }
     }
 
-    return queue_device_command($deviceId, 'mouse_input', $payload);
+    return queue_device_command($deviceId, 'mouse_input', $payload, $ttlSeconds);
 }
 
 $deviceId = (int) ($body['device_id'] ?? 0);
@@ -220,6 +227,10 @@ $device = $stmt->fetch();
 if (!$device) {
     json_response(['ok' => false, 'error' => 'Device tidak ditemukan'], 404);
 }
+prune_expired_commands($deviceId);
+$liveConfig = app_config()['live'] ?? [];
+$pointerCommandTtl = (int) ($liveConfig['pointer_command_ttl_seconds'] ?? 3);
+$inputCommandTtl = (int) ($liveConfig['input_command_ttl_seconds'] ?? 5);
 
 $lastSeenAgeSeconds = $device['last_seen_age_seconds'] === null
     ? null
@@ -282,16 +293,21 @@ if ($action === 'click') {
         'y' => $y,
         'button' => $button,
         'double' => !empty($body['double']),
-    ]);
+    ], $inputCommandTtl);
 }
 
 if ($action === 'pointer') {
-    queue_pointer_command($deviceId, live_pointer_payload($body));
+    queue_pointer_command($deviceId, live_pointer_payload($body), $pointerCommandTtl);
 }
 
 if ($action === 'key') {
     $keyboardPayload = live_keyboard_payload($body);
-    queue_device_command($deviceId, ($keyboardPayload['kind'] ?? '') === 'state' ? 'keyboard_state' : 'keyboard_input', $keyboardPayload);
+    queue_device_command(
+        $deviceId,
+        ($keyboardPayload['kind'] ?? '') === 'state' ? 'keyboard_state' : 'keyboard_input',
+        $keyboardPayload,
+        $inputCommandTtl
+    );
 }
 
 if ($action === 'transport') {

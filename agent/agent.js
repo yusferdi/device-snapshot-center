@@ -10,7 +10,9 @@ import robot from "robotjs";
 import screenshotDesktop from "screenshot-desktop";
 
 const execFileAsync = promisify(execFile);
-const AGENT_VERSION = "1.7.0";
+const AGENT_VERSION = "1.8.0";
+const AGENT_BOOT_ID = crypto.randomUUID();
+const AGENT_BOOT_STARTED_AT = Date.now();
 const CONFIG_PATH = path.resolve("agent.config.json");
 const EXAMPLE_CONFIG_PATH = path.resolve("agent.config.example.json");
 const STATE_PATH = path.resolve("agent.state.json");
@@ -149,7 +151,9 @@ async function apiJson(config, endpoint, body, token = null, options = {}) {
   }
 
   if (!response.ok || data.ok === false) {
-    throw new Error(data.error || `Server request failed with status ${response.status}`);
+    const error = new Error(data.error || `Server request failed with status ${response.status}`);
+    error.status = response.status;
+    throw error;
   }
 
   return data;
@@ -1216,11 +1220,20 @@ async function pollOnce(config, state) {
     : 0;
   const result = await apiJson(config, "/api/poll.php", {
     agent_version: AGENT_VERSION,
+    agent_boot_id: AGENT_BOOT_ID,
+    agent_boot_started_at: AGENT_BOOT_STARTED_AT,
     wait_ms: requestedWaitMs,
   }, state.deviceToken, {
     timeoutMs: Math.max(config.requestTimeoutMs, requestedWaitMs + 5000),
   });
   const selectedTransport = String(result.transport?.selected || "http-poll");
+  const recoveredCommands = Number(result.agent_session?.recovered || 0);
+  const discardedLiveCommands = Number(result.agent_session?.discarded_live || 0);
+  if (recoveredCommands > 0 || discardedLiveCommands > 0) {
+    console.log(
+      `[agent] recovered previous boot: failed=${recoveredCommands} discarded-live=${discardedLiveCommands}`
+    );
+  }
   const serverPreference = String(result.transport?.requested || "auto");
   if (serverPreference === "poll" && preferredTransportMode !== "poll") {
     preferredTransportMode = "poll";
@@ -1309,6 +1322,12 @@ async function main() {
         await sleep(nextPollMs);
       }
     } catch (error) {
+      if (
+        error.status === 409
+        && /superseded|boot-session support/i.test(String(error.message || ""))
+      ) {
+        throw error;
+      }
       console.error(`[agent] poll error: ${error.message}`);
       consecutivePollErrors += 1;
       if (config.longPollMs > 0 && consecutivePollErrors >= 2 && Date.now() >= longPollSuspendedUntil) {

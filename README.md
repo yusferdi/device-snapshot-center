@@ -53,6 +53,14 @@ node scripts/verify-deployment.mjs https://lppsp.ui.ac.id/any/server
 
 Lihat [DEPLOYMENT.md](DEPLOYMENT.md) untuk release checklist, OPcache, dan rollback.
 
+Checklist tindakan production yang masih wajib dilakukan tersimpan di [USER_ACTION_REQUIRED.md](USER_ACTION_REQUIRED.md).
+
+Uji migrasi schema, expiry input live, dan pemulihan agent restart:
+
+```powershell
+C:\xampp\php\php.exe scripts\test-reliability.php
+```
+
 3. Buat database dan import schema:
 
 ```sql
@@ -183,5 +191,7 @@ Dashboard menyimpan `transport_mode` per device dan metode efektif terakhir. `Po
 - `APP_POINTER_BATCH_MS=48`: interval browser mengelompokkan pointer move.
 - `APP_POINTER_MAX_EVENTS=64`: batas event per batch.
 - `APP_POINTER_RELEASE_TIMEOUT_MS=2500`: watchdog pelepas tombol mouse.
+- `APP_POINTER_COMMAND_TTL_SECONDS=3`: membuang event pointer live yang sudah basi sebelum agent mengambilnya.
+- `APP_INPUT_COMMAND_TTL_SECONDS=5`: membuang klik dan input keyboard live yang terlambat.
 
 Lapisan berikutnya dapat menambahkan WSS dan WebRTC sebagai transport lebih cepat tanpa menghapus fallback HTTP ini.

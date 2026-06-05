@@ -79,11 +79,17 @@ try {
 }
 
 if (remoteVersion) {
-  if (remoteVersion.contract_version !== 2) {
-    failures.push(`version contract is ${remoteVersion.contract_version ?? "missing"}, expected 2`);
+  if (remoteVersion.contract_version !== 3) {
+    failures.push(`version contract is ${remoteVersion.contract_version ?? "missing"}, expected 3`);
   }
   if (remoteVersion.features?.capture_queue_compaction !== true) {
     failures.push("remote release does not advertise capture_queue_compaction");
+  }
+  if (remoteVersion.features?.agent_boot_recovery !== true) {
+    failures.push("remote release does not advertise agent_boot_recovery");
+  }
+  if (remoteVersion.features?.live_command_expiry !== true) {
+    failures.push("remote release does not advertise live_command_expiry");
   }
   if (remoteVersion.release !== expected.release) {
     console.log(`[verify] remote release label ${remoteVersion.release} differs from auto hash; validating file hashes`);

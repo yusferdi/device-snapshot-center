@@ -12,6 +12,22 @@ $pdo = db();
 $liveConfig = app_config()['live'] ?? [];
 
 $agentVersion = clean_text((string) ($body['agent_version'] ?? ''), 40);
+$agentBootId = preg_replace('/[^A-Za-z0-9._-]/', '', clean_text((string) ($body['agent_boot_id'] ?? ''), 64)) ?: '';
+$agentBootStartedAt = max(0, (int) ($body['agent_boot_started_at'] ?? 0));
+if ($agentBootId === '' && !empty($device['agent_boot_id'])) {
+    json_response(['ok' => false, 'error' => 'Agent must be restarted with boot-session support'], 409);
+}
+if ($agentBootId !== '' && $agentBootStartedAt <= 0) {
+    json_response(['ok' => false, 'error' => 'agent_boot_started_at is required'], 400);
+}
+$agentSession = $agentBootId !== '' && (string) ($device['agent_boot_id'] ?? '') === $agentBootId
+    ? ['accepted' => true, 'changed' => false, 'recovered' => 0, 'discarded_live' => 0]
+    : claim_agent_boot((int) $device['id'], $agentBootId, $agentBootStartedAt);
+if (empty($agentSession['accepted'])) {
+    json_response(['ok' => false, 'error' => 'Agent process was superseded by a newer boot'], 409);
+}
+prune_expired_commands((int) $device['id']);
+
 $transportMode = (string) ($device['transport_mode'] ?? 'poll');
 if (!array_key_exists($transportMode, transport_modes())) {
     $transportMode = 'poll';
@@ -45,7 +61,9 @@ $agentVersion === ''
 
 $queuedCommandStmt = $pdo->prepare(
     "SELECT * FROM commands
-     WHERE device_id = ? AND status = 'queued'
+     WHERE device_id = ?
+       AND status = 'queued'
+       AND (expires_at IS NULL OR expires_at > NOW())
      ORDER BY
        CASE action
          WHEN 'mouse_input' THEN 0
@@ -60,12 +78,23 @@ $queuedCommandStmt = $pdo->prepare(
 );
 $lockCommandStmt = $pdo->prepare(
     "SELECT * FROM commands
-     WHERE id = ? AND device_id = ? AND status = 'queued'
+     WHERE id = ?
+       AND device_id = ?
+       AND status = 'queued'
+       AND (expires_at IS NULL OR expires_at > NOW())
      LIMIT 1
      FOR UPDATE"
 );
+$lockAgentSessionStmt = $pdo->prepare(
+    'SELECT agent_boot_id
+     FROM devices
+     WHERE id = ?
+     LIMIT 1
+     FOR UPDATE'
+);
 $modeStmt = $pdo->prepare('SELECT transport_mode FROM devices WHERE id = ? LIMIT 1');
 $command = null;
+$agentSuperseded = false;
 do {
     $queuedCommandStmt->execute([(int) $device['id']]);
     $candidate = $queuedCommandStmt->fetch();
@@ -73,6 +102,14 @@ do {
     if ($candidate) {
         $pdo->beginTransaction();
         try {
+            $lockAgentSessionStmt->execute([(int) $device['id']]);
+            $currentBootId = (string) ($lockAgentSessionStmt->fetchColumn() ?: '');
+            if ($agentBootId !== '' && $currentBootId !== $agentBootId) {
+                $pdo->commit();
+                $agentSuperseded = true;
+                break;
+            }
+
             $lockCommandStmt->execute([(int) $candidate['id'], (int) $device['id']]);
             $candidate = $lockCommandStmt->fetch();
 
@@ -130,6 +167,10 @@ do {
     usleep(min($probeMs, $remainingMs) * 1000);
 } while (true);
 
+if ($agentSuperseded) {
+    json_response(['ok' => false, 'error' => 'Agent process was superseded by a newer boot'], 409);
+}
+
 $transport = [
     'requested' => $transportMode,
     'selected' => $waitMs > 0 ? 'http-long-poll' : 'http-poll',
@@ -156,10 +197,11 @@ if (!$command) {
         'command' => null,
         'poll_after_ms' => $pollAfterMs,
         'transport' => $transport,
+        'agent_session' => $agentSession,
     ]);
 }
 
-if (!is_ephemeral_action((string) $command['action'])) {
+if (empty($command['expires_at']) && !is_ephemeral_action((string) $command['action'])) {
     audit_event((int) $device['id'], (int) $command['id'], 'command_claimed', [
         'action' => $command['action'],
         'transport' => $transport['selected'],
@@ -180,4 +222,5 @@ json_response([
     ],
     'poll_after_ms' => 0,
     'transport' => $transport,
+    'agent_session' => $agentSession,
 ]);

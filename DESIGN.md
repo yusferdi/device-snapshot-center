@@ -62,6 +62,8 @@ Device Snapshot Center should feel like a compact remote-operations console: cal
 - The agent screen pipeline is single-flight, and queued live captures are compacted to the newest request before they can create stale-frame backlog.
 - Artifact transfers have explicit deadlines, and command completion is retried idempotently to prevent a transient network failure from leaving the screen pipeline stuck.
 - Idle long-poll probes avoid database transactions; transport preference is rechecked on a bounded cadence instead of on every probe.
+- Every agent process has a boot-session identity. A newer process supersedes older polls, recovers durable commands left in `running`, and discards stale live input.
+- Live pointer, click, and keyboard commands expire quickly and are never replayed after their interaction window has passed.
 - A transport failure must release active mouse buttons automatically.
 - A transport failure, browser blur, or panic-off must release active keyboard keys automatically.
 - Animation should be short, functional, and disabled through `prefers-reduced-motion`.
@@ -72,6 +74,7 @@ Device Snapshot Center should feel like a compact remote-operations console: cal
 - Select transports per capability instead of treating the whole session as one connection.
 - Prefer the lowest-latency available transport, retain a warm fallback, and upgrade again after recovery without restarting the agent.
 - Current baseline is adaptive HTTP long-poll with short-poll circuit-breaker fallback. Future WSS and WebRTC transports must preserve the same pointer sequence and epoch contract.
+- A future WebRTC input lane should allow unordered, limited-lifetime delivery for pointer move while keeping down/up and keyboard boundaries ordered and reliable.
 - High-frequency pointer move commands are ephemeral and must not flood audit history or persist after successful execution.
 
 ## Mobile Rules

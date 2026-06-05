@@ -126,6 +126,8 @@ $config = [
         'pointer_batch_ms' => max(24, min(250, $envInt('APP_POINTER_BATCH_MS', 48))),
         'pointer_max_events' => max(4, min(128, $envInt('APP_POINTER_MAX_EVENTS', 64))),
         'pointer_release_timeout_ms' => max(500, min(10000, $envInt('APP_POINTER_RELEASE_TIMEOUT_MS', 2500))),
+        'pointer_command_ttl_seconds' => max(1, min(30, $envInt('APP_POINTER_COMMAND_TTL_SECONDS', 3))),
+        'input_command_ttl_seconds' => max(1, min(30, $envInt('APP_INPUT_COMMAND_TTL_SECONDS', 5))),
     ],
     'allowed_artifact_mime_prefixes' => [
         'image/',

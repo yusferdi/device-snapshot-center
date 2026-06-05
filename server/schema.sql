@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS devices (
   platform VARCHAR(80) DEFAULT NULL,
   hostname VARCHAR(190) DEFAULT NULL,
   agent_version VARCHAR(40) DEFAULT NULL,
+  agent_boot_id VARCHAR(64) DEFAULT NULL,
+  agent_boot_started_at BIGINT UNSIGNED NOT NULL DEFAULT 0,
   last_seen DATETIME DEFAULT NULL,
   favorite TINYINT(1) NOT NULL DEFAULT 0,
   tags VARCHAR(255) NOT NULL DEFAULT '',
@@ -39,11 +41,13 @@ CREATE TABLE IF NOT EXISTS commands (
   artifact_path VARCHAR(255) DEFAULT NULL,
   artifact_name VARCHAR(255) DEFAULT NULL,
   artifact_mime VARCHAR(120) DEFAULT NULL,
+  expires_at DATETIME DEFAULT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   claimed_at DATETIME DEFAULT NULL,
   completed_at DATETIME DEFAULT NULL,
   PRIMARY KEY (id),
   KEY idx_commands_device_status (device_id, status, id),
+  KEY idx_commands_device_expiry (device_id, status, expires_at, id),
   KEY idx_commands_created_at (created_at),
   CONSTRAINT fk_commands_device
     FOREIGN KEY (device_id) REFERENCES devices (id)
@@ -68,3 +72,14 @@ CREATE TABLE IF NOT EXISTS audit_events (
     FOREIGN KEY (command_id) REFERENCES commands (id)
     ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS app_meta (
+  meta_key VARCHAR(80) NOT NULL,
+  meta_value VARCHAR(255) NOT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (meta_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT INTO app_meta (meta_key, meta_value)
+VALUES ('schema_version', '3')
+ON DUPLICATE KEY UPDATE meta_value = VALUES(meta_value);
