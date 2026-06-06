@@ -6,19 +6,19 @@
 
   const apiUrl = root.dataset.liveApi;
   const csrfToken = root.dataset.csrfToken;
-  const defaultCaptureIntervalMs = Math.max(800, Number(root.dataset.captureInterval || 1800));
-  const defaultStatusIntervalMs = Math.max(500, Number(root.dataset.statusInterval || 900));
+  const defaultCaptureIntervalMs = Math.max(400, Number(root.dataset.captureInterval || 1000));
+  const defaultStatusIntervalMs = Math.max(300, Number(root.dataset.statusInterval || 650));
   const idleStatusIntervalMs = Math.max(2000, Number(root.dataset.idleStatusInterval || 5000));
-  const defaultPointerBatchMs = Math.max(24, Number(root.dataset.pointerBatch || 48));
+  const defaultPointerBatchMs = Math.max(12, Number(root.dataset.pointerBatch || 24));
   const pointerMaxEvents = Math.max(4, Number(root.dataset.pointerMaxEvents || 64));
   const wheelPixelPerLine = Math.max(4, Number(root.dataset.wheelPixelPerLine || 6));
   const wheelPageLines = Math.max(3, Number(root.dataset.wheelPageLines || 24));
   const wheelMaxLines = Math.max(3, Number(root.dataset.wheelMaxLines || 120));
   const speedProfiles = {
     eco: {
-      capture: Math.max(3500, defaultCaptureIntervalMs + 2000),
-      status: Math.max(1800, defaultStatusIntervalMs + 1000),
-      pointer: Math.max(96, defaultPointerBatchMs * 2),
+      capture: Math.max(2800, defaultCaptureIntervalMs + 1800),
+      status: Math.max(1500, defaultStatusIntervalMs + 850),
+      pointer: Math.max(64, defaultPointerBatchMs * 2),
     },
     flow: {
       capture: defaultCaptureIntervalMs,
@@ -26,9 +26,9 @@
       pointer: defaultPointerBatchMs,
     },
     burst: {
-      capture: Math.max(350, Math.min(650, Math.round(defaultCaptureIntervalMs / 3))),
-      status: Math.max(350, Math.min(500, Math.round(defaultStatusIntervalMs / 2))),
-      pointer: 24,
+      capture: Math.max(240, Math.min(420, Math.round(defaultCaptureIntervalMs / 3))),
+      status: Math.max(240, Math.min(360, Math.round(defaultStatusIntervalMs / 2))),
+      pointer: 12,
     },
   };
 
@@ -41,6 +41,9 @@
   const fullscreenButton = root.querySelector("[data-live-fullscreen]");
   const gridButton = root.querySelector("[data-live-grid]");
   const verboseButton = root.querySelector("[data-live-verbose]");
+  const zoomOutButton = root.querySelector("[data-live-zoom-out]");
+  const zoomInButton = root.querySelector("[data-live-zoom-in]");
+  const zoomResetButton = root.querySelector("[data-live-zoom-reset]");
   const speedButtons = Array.from(root.querySelectorAll("[data-live-speed]"));
   const stopButton = root.querySelector("[data-live-stop]");
   const viewer = root.querySelector("[data-live-viewer]");
@@ -87,6 +90,9 @@
   let wheelRemainderY = 0;
   let liveRttMs = null;
   let focusModeActive = false;
+  let liveZoom = 1;
+  let livePanX = 0;
+  let livePanY = 0;
   let detailStatusEnabled = localStorage.getItem("dsc_live_detail_status") === "on";
   const remoteKeysDown = new Set();
   const pointerEventsSupported = "PointerEvent" in window;
@@ -136,6 +142,38 @@
     verboseButton.setAttribute("aria-label", label);
     verboseButton.setAttribute("title", label);
     verboseButton.querySelector("[data-verbose-label]")?.replaceChildren(label);
+  }
+
+  function updateZoomState() {
+    const label = liveZoom === 1 ? "Fit" : `${Math.round(liveZoom * 100)}%`;
+    stage?.style.setProperty("--live-zoom", String(liveZoom));
+    stage?.style.setProperty("--live-pan-x", `${Math.round(livePanX)}px`);
+    stage?.style.setProperty("--live-pan-y", `${Math.round(livePanY)}px`);
+    root.dataset.zoom = liveZoom === 1 ? "fit" : "manual";
+    zoomResetButton?.replaceChildren(label);
+    zoomResetButton?.setAttribute("aria-label", liveZoom === 1 ? "Zoom fit" : `Reset zoom from ${label}`);
+    zoomOutButton?.toggleAttribute("disabled", liveZoom <= 1);
+    zoomResetButton?.toggleAttribute("disabled", liveZoom === 1);
+  }
+
+  function setLiveZoom(nextZoom) {
+    const normalized = Math.max(1, Math.min(4, Math.round(nextZoom * 100) / 100));
+    liveZoom = normalized;
+    if (liveZoom === 1) {
+      livePanX = 0;
+      livePanY = 0;
+    }
+    updateZoomState();
+    stage?.focus({ preventScroll: true });
+    setStatus(liveZoom === 1 ? "Zoom fit" : `Zoom ${Math.round(liveZoom * 100)}%`, { detail: true });
+  }
+
+  function stepLiveZoom(direction) {
+    const levels = [1, 1.25, 1.5, 2, 3, 4];
+    const currentIndex = levels.findIndex((level) => level >= liveZoom - 0.01);
+    const baseIndex = currentIndex >= 0 ? currentIndex : 0;
+    const nextIndex = Math.max(0, Math.min(levels.length - 1, baseIndex + direction));
+    setLiveZoom(levels[nextIndex]);
   }
 
   function setMode(text, state) {
@@ -557,6 +595,9 @@
   }
 
   fullscreenButton?.addEventListener("click", toggleFullscreen);
+  zoomOutButton?.addEventListener("click", () => stepLiveZoom(-1));
+  zoomInButton?.addEventListener("click", () => stepLiveZoom(1));
+  zoomResetButton?.addEventListener("click", () => setLiveZoom(1));
   gridButton?.addEventListener("click", () => {
     const active = root.dataset.grid !== "on";
     root.dataset.grid = active ? "on" : "off";
@@ -660,8 +701,9 @@
 
   function screenPoint(event, clampOutside = false) {
     const box = renderedImageBox();
-    let localX = event.clientX - box.left;
-    let localY = event.clientY - box.top;
+    const zoom = liveZoom || 1;
+    let localX = ((event.clientX - box.left - livePanX - (box.width / 2)) / zoom) + (box.width / 2);
+    let localY = ((event.clientY - box.top - livePanY - (box.height / 2)) / zoom) + (box.height / 2);
 
     if (!clampOutside && (localX < 0 || localY < 0 || localX > box.width || localY > box.height)) {
       throw new Error("Klik di luar area frame");
@@ -1249,6 +1291,7 @@
   updateSwitchAria();
   updateSpeedButtons();
   updateVerboseState();
+  updateZoomState();
   updateFullscreenState();
   stopLive();
 })();

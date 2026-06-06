@@ -603,6 +603,9 @@ label:has(> select)::after {
   place-items: center;
   border: 0;
   border-radius: 0;
+  --live-pan-x: 0px;
+  --live-pan-y: 0px;
+  --live-zoom: 1;
   background:
     linear-gradient(180deg, rgb(255 255 255 / 4%), transparent 18%),
     #0e1726;
@@ -657,8 +660,11 @@ label:has(> select)::after {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  transform: translate(var(--live-pan-x), var(--live-pan-y)) scale(var(--live-zoom));
+  transform-origin: center;
   cursor: default;
   user-select: none;
+  will-change: transform;
 }
 
 [data-live-dashboard][data-control="on"] .live-stage img.ready {
@@ -703,8 +709,34 @@ label:has(> select)::after {
 }
 
 .live-viewer.is-focus-mode .live-viewer-bar {
-  min-height: 72px;
-  padding: 18px 20px;
+  top: 10px;
+  right: auto;
+  bottom: auto;
+  left: 50%;
+  width: min(760px, calc(100% - 20px));
+  min-height: 44px;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: rgb(2 6 23 / 62%);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 26%);
+  opacity: .12;
+  flex-wrap: wrap;
+  transform: translate(-50%, -4px);
+}
+
+.live-viewer.is-focus-mode:hover .live-viewer-bar,
+.live-viewer.is-focus-mode:focus-within .live-viewer-bar {
+  opacity: .94;
+  transform: translate(-50%, 0);
+}
+
+.live-viewer.is-focus-mode .live-status {
+  flex: 1 1 180px;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .live-status {
@@ -729,6 +761,8 @@ label:has(> select)::after {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 7px;
 }
 
@@ -745,6 +779,36 @@ label:has(> select)::after {
 .live-view-actions .icon-button:hover {
   color: #fff;
   background: rgb(15 23 42 / 96%);
+}
+
+.live-view-actions .icon-button:disabled,
+.live-view-actions .icon-button:disabled:hover {
+  color: #94a3b8;
+  background: rgb(15 23 42 / 44%);
+  transform: none;
+}
+
+.zoom-chip {
+  min-width: 52px;
+  height: 38px;
+  border: 1px solid rgb(255 255 255 / 18%);
+  color: #fff;
+  background: rgb(15 23 42 / 72%);
+  font-size: 12px;
+  font-weight: 800;
+  backdrop-filter: blur(8px);
+}
+
+.zoom-chip:hover {
+  color: #fff;
+  background: rgb(15 23 42 / 96%);
+}
+
+.zoom-chip:disabled,
+.zoom-chip:disabled:hover {
+  color: #94a3b8;
+  background: rgb(15 23 42 / 44%);
+  transform: none;
 }
 
 .live-view-actions .button.danger {
@@ -1295,6 +1359,17 @@ pre {
     width: 34px;
     min-width: 34px;
     height: 34px;
+  }
+
+  .zoom-chip {
+    min-width: 44px;
+    height: 34px;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .live-viewer.is-focus-mode .live-status {
+    display: none;
   }
 
   .control-cluster {

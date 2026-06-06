@@ -451,14 +451,14 @@ header('X-App-Release: ' . app_release());
                 data-live-dashboard
                 data-live-api="<?= h(app_url('api/live.php')) ?>"
                 data-csrf-token="<?= h(csrf_token()) ?>"
-                data-capture-interval="<?= (int) ($liveConfig['capture_interval_ms'] ?? 1800) ?>"
-                data-status-interval="<?= (int) ($liveConfig['status_interval_ms'] ?? 900) ?>"
+                data-capture-interval="<?= (int) ($liveConfig['capture_interval_ms'] ?? 1000) ?>"
+                data-status-interval="<?= (int) ($liveConfig['status_interval_ms'] ?? 650) ?>"
                 data-idle-status-interval="<?= (int) ($liveConfig['idle_status_interval_ms'] ?? 5000) ?>"
-                data-pointer-batch="<?= (int) ($liveConfig['pointer_batch_ms'] ?? 48) ?>"
+                data-pointer-batch="<?= (int) ($liveConfig['pointer_batch_ms'] ?? 24) ?>"
                 data-pointer-max-events="<?= (int) ($liveConfig['pointer_max_events'] ?? 64) ?>"
-                data-wheel-pixel-per-line="<?= (int) ($liveConfig['wheel_pixel_per_line'] ?? 16) ?>"
-                data-wheel-page-lines="<?= (int) ($liveConfig['wheel_page_lines'] ?? 12) ?>"
-                data-wheel-max-lines="<?= (int) ($liveConfig['wheel_max_lines'] ?? 90) ?>"
+                data-wheel-pixel-per-line="<?= (int) ($liveConfig['wheel_pixel_per_line'] ?? 6) ?>"
+                data-wheel-page-lines="<?= (int) ($liveConfig['wheel_page_lines'] ?? 24) ?>"
+                data-wheel-max-lines="<?= (int) ($liveConfig['wheel_max_lines'] ?? 120) ?>"
             >
                 <div class="panel-heading">
                     <div>
@@ -504,6 +504,20 @@ header('X-App-Release: ' . app_release());
                                         <path d="M4 12a8 8 0 1 0 16 0 8 8 0 0 0-16 0z"></path>
                                     </svg>
                                     <span class="sr-only" data-verbose-label>Show detailed live status</span>
+                                </button>
+                                <button class="button compact secondary icon-button" type="button" aria-label="Zoom out" title="Zoom out" data-live-zoom-out>
+                                    <svg aria-hidden="true" viewBox="0 0 24 24">
+                                        <path d="M5 12h14"></path>
+                                    </svg>
+                                    <span class="sr-only">Zoom out</span>
+                                </button>
+                                <button class="button compact secondary zoom-chip" type="button" aria-label="Reset zoom" title="Reset zoom" data-live-zoom-reset>Fit</button>
+                                <button class="button compact secondary icon-button" type="button" aria-label="Zoom in" title="Zoom in" data-live-zoom-in>
+                                    <svg aria-hidden="true" viewBox="0 0 24 24">
+                                        <path d="M12 5v14"></path>
+                                        <path d="M5 12h14"></path>
+                                    </svg>
+                                    <span class="sr-only">Zoom in</span>
                                 </button>
                                 <button class="button compact icon-button" type="button" aria-label="Enter focus view" title="Focus view tanpa mengunci taskbar" data-live-fullscreen>
                                     <svg aria-hidden="true" viewBox="0 0 24 24">

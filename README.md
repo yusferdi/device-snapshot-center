@@ -127,11 +127,12 @@ Agent menyimpan token di `agent/agent.state.json`, lalu memulai HTTP polling dan
 - Capture layar memakai single-flight pipeline di agent; frame live yang menumpuk dikompaksi agar screenshot/upload tidak berjalan paralel tanpa batas.
 - Upload/download artifact memiliki deadline, sedangkan completion command mencoba ulang secara idempotent saat jaringan terganggu.
 - Metode koneksi dapat dipilih per-device dari dashboard: `Polling`, `Long poll`, atau `Auto`, tanpa restart agent. Agent mulai dengan `Polling`.
+- Zoom live screen mendukung `Fit`, zoom in, dan zoom out; mapping klik tetap dihitung terhadap koordinat layar agent.
 - Grid overlay opsional untuk membantu validasi alignment layar dan koordinat klik.
 - Klik mouse jarak jauh melalui action `mouse_click` untuk left-click, double-click, dan right-click, hanya jika `allowRemoteControl` aktif di config agent.
 - Pointer drag-and-drop melalui action `mouse_input` dengan event berurutan `down`, `move`, `up`, dan `cancel`. Move batch lama dikompaksi agar antrean tidak tertinggal.
 - Drag yang sedang ditahan mengirim keepalive sehingga tombol mouse tidak dilepas watchdog saat pointer diam.
-- Mouse wheel vertikal/horizontal dikirim sebagai pointer input. Tombol focus view memperbesar layar remote di dalam jendela browser tanpa mengunci taskbar Windows.
+- Mouse wheel vertikal/horizontal dikirim sebagai pointer input. Tombol focus view memperbesar layar remote di dalam jendela browser tanpa mengunci taskbar Windows, dan toolbar focus berada di atas agar tidak menutup taskbar remote.
 - Input keyboard jarak jauh melalui action `keyboard_input`, hanya jika `allowRemoteControl` dan `allowKeyboardInput` aktif di config agent.
 - Copy/paste clipboard dari dashboard ke agent melalui action `clipboard_write`; agent menulis clipboard OS, lalu opsional langsung menjalankan paste ke window aktif.
 - Agent `1.6+` memakai keyboard state `down/up`, mendukung tahan tombol, key repeat OS, Backspace, Delete, arrow, F1-F24, modifier, numpad, dan media key.
@@ -189,15 +190,17 @@ Dashboard menyimpan `transport_mode` per device dan metode efektif terakhir. `Po
 WebRTC belum tersedia sebagai transport aktif. Opsi ini membutuhkan signaling endpoint, STUN/TURN, dan data/media channel agent sebelum bisa dipilih dari dashboard.
 
 - `APP_AGENT_LONG_POLL_MS=15000`: durasi tunggu request agent; isi `0` untuk memaksa short-poll.
-- `APP_AGENT_POLL_PROBE_MS=120`: ritme server memeriksa command selama long-poll.
+- `APP_LIVE_CAPTURE_INTERVAL_MS=1000`: interval default request frame live; mode Burst menurunkannya otomatis.
+- `APP_LIVE_STATUS_INTERVAL_MS=650`: interval default refresh status live.
+- `APP_AGENT_POLL_PROBE_MS=60`: ritme server memeriksa command selama long-poll.
 - `APP_AGENT_MODE_RECHECK_MS=1000`: interval pemeriksaan perubahan metode koneksi saat long-poll.
 - `APP_AGENT_LONG_POLL_ALLOW_CLI_SERVER=false`: melindungi PHP built-in server yang single-worker agar dashboard lokal tidak tertahan.
 - `APP_IDLE_STATUS_INTERVAL_MS=5000`: heartbeat status dashboard saat Live tidak aktif.
 - `APP_AGENT_ONLINE_WINDOW_SECONDS=60`: batas usia heartbeat agar device dianggap aktif.
 - `APP_LIVE_ACTIVITY_TTL_SECONDS=12`: berapa lama profil polling aktif dipertahankan setelah aktivitas dashboard.
-- `APP_AGENT_POLL_IDLE_MS=500`: ritme polling saat tidak ada sesi live.
-- `APP_AGENT_POLL_ECO_MS=180`, `APP_AGENT_POLL_FLOW_MS=75`, `APP_AGENT_POLL_BURST_MS=30`: ritme polling adaptif saat sesi live.
-- `APP_POINTER_BATCH_MS=48`: interval browser mengelompokkan pointer move.
+- `APP_AGENT_POLL_IDLE_MS=350`: ritme polling saat tidak ada sesi live.
+- `APP_AGENT_POLL_ECO_MS=120`, `APP_AGENT_POLL_FLOW_MS=45`, `APP_AGENT_POLL_BURST_MS=15`: ritme polling adaptif saat sesi live.
+- `APP_POINTER_BATCH_MS=24`: interval browser mengelompokkan pointer move.
 - `APP_POINTER_MAX_EVENTS=64`: batas event per batch.
 - `APP_POINTER_RELEASE_TIMEOUT_MS=2500`: watchdog pelepas tombol mouse.
 - `APP_POINTER_COMMAND_TTL_SECONDS=3`: membuang event pointer live yang sudah basi sebelum agent mengambilnya.
