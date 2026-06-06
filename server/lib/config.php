@@ -128,9 +128,9 @@ $config = [
         'pointer_release_timeout_ms' => max(500, min(10000, $envInt('APP_POINTER_RELEASE_TIMEOUT_MS', 2500))),
         'pointer_command_ttl_seconds' => max(1, min(30, $envInt('APP_POINTER_COMMAND_TTL_SECONDS', 3))),
         'input_command_ttl_seconds' => max(1, min(30, $envInt('APP_INPUT_COMMAND_TTL_SECONDS', 5))),
-        'wheel_pixel_per_line' => max(8, min(160, $envInt('APP_WHEEL_PIXEL_PER_LINE', 16))),
-        'wheel_page_lines' => max(3, min(60, $envInt('APP_WHEEL_PAGE_LINES', 12))),
-        'wheel_max_lines' => max(3, min(120, $envInt('APP_WHEEL_MAX_LINES', 90))),
+        'wheel_pixel_per_line' => max(4, min(160, $envInt('APP_WHEEL_PIXEL_PER_LINE', 6))),
+        'wheel_page_lines' => max(3, min(90, $envInt('APP_WHEEL_PAGE_LINES', 24))),
+        'wheel_max_lines' => max(3, min(160, $envInt('APP_WHEEL_MAX_LINES', 120))),
     ],
     'allowed_artifact_mime_prefixes' => [
         'image/',

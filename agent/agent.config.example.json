@@ -20,5 +20,5 @@
   "allowFileTransfer": true,
   "allowSessionRecording": true,
   "maxClipboardTextBytes": 8192,
-  "wheelScrollMultiplier": 1.5
+  "wheelScrollMultiplier": 4
 }

@@ -11,9 +11,9 @@
   const idleStatusIntervalMs = Math.max(2000, Number(root.dataset.idleStatusInterval || 5000));
   const defaultPointerBatchMs = Math.max(24, Number(root.dataset.pointerBatch || 48));
   const pointerMaxEvents = Math.max(4, Number(root.dataset.pointerMaxEvents || 64));
-  const wheelPixelPerLine = Math.max(8, Number(root.dataset.wheelPixelPerLine || 16));
-  const wheelPageLines = Math.max(3, Number(root.dataset.wheelPageLines || 12));
-  const wheelMaxLines = Math.max(3, Number(root.dataset.wheelMaxLines || 90));
+  const wheelPixelPerLine = Math.max(4, Number(root.dataset.wheelPixelPerLine || 6));
+  const wheelPageLines = Math.max(3, Number(root.dataset.wheelPageLines || 24));
+  const wheelMaxLines = Math.max(3, Number(root.dataset.wheelMaxLines || 120));
   const speedProfiles = {
     eco: {
       capture: Math.max(3500, defaultCaptureIntervalMs + 2000),
