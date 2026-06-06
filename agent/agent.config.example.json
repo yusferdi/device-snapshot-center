@@ -18,5 +18,5 @@
   "allowKeyboardInput": true,
   "allowFileTransfer": true,
   "allowSessionRecording": true,
-  "wheelScrollMultiplier": 1
+  "wheelScrollMultiplier": 1.5
 }

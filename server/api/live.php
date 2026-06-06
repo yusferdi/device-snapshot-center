@@ -107,7 +107,7 @@ function live_pointer_payload(array $body): array
     $events = $body['events'] ?? null;
     $liveConfig = app_config()['live'] ?? [];
     $maxEvents = (int) ($liveConfig['pointer_max_events'] ?? 64);
-    $wheelMaxLines = (int) ($liveConfig['wheel_max_lines'] ?? 60);
+    $wheelMaxLines = (int) ($liveConfig['wheel_max_lines'] ?? 90);
     if (!is_array($events) || $events === [] || count($events) > $maxEvents) {
         json_response(['ok' => false, 'error' => 'Batch pointer tidak valid'], 400);
     }

@@ -440,9 +440,9 @@ header('X-App-Release: ' . app_release());
                 data-idle-status-interval="<?= (int) ($liveConfig['idle_status_interval_ms'] ?? 5000) ?>"
                 data-pointer-batch="<?= (int) ($liveConfig['pointer_batch_ms'] ?? 48) ?>"
                 data-pointer-max-events="<?= (int) ($liveConfig['pointer_max_events'] ?? 64) ?>"
-                data-wheel-pixel-per-line="<?= (int) ($liveConfig['wheel_pixel_per_line'] ?? 32) ?>"
+                data-wheel-pixel-per-line="<?= (int) ($liveConfig['wheel_pixel_per_line'] ?? 16) ?>"
                 data-wheel-page-lines="<?= (int) ($liveConfig['wheel_page_lines'] ?? 12) ?>"
-                data-wheel-max-lines="<?= (int) ($liveConfig['wheel_max_lines'] ?? 60) ?>"
+                data-wheel-max-lines="<?= (int) ($liveConfig['wheel_max_lines'] ?? 90) ?>"
             >
                 <div class="panel-heading">
                     <div>
@@ -473,22 +473,30 @@ header('X-App-Release: ' . app_release());
                                     </svg>
                                     <span class="sr-only">Capture frame</span>
                                 </button>
-                                <button class="button compact secondary icon-button" type="button" aria-label="Toggle grid" title="Toggle grid" aria-pressed="false" data-live-grid>
+                                <button class="button compact secondary icon-button" type="button" aria-label="Toggle coordinate grid" title="Coordinate grid untuk cek mapping klik" aria-pressed="false" data-live-grid>
                                     <svg aria-hidden="true" viewBox="0 0 24 24">
                                         <path d="M4 4h16v16H4z"></path>
                                         <path d="M4 12h16"></path>
                                         <path d="M12 4v16"></path>
                                     </svg>
-                                    <span class="sr-only">Toggle grid</span>
+                                    <span class="sr-only">Toggle coordinate grid</span>
                                 </button>
-                                <button class="button compact icon-button" type="button" aria-label="Enter fullscreen" title="Enter fullscreen" data-live-fullscreen>
+                                <button class="button compact secondary icon-button" type="button" aria-label="Show detailed live status" title="Show detailed live status" aria-pressed="false" data-live-verbose>
+                                    <svg aria-hidden="true" viewBox="0 0 24 24">
+                                        <path d="M12 17v-6"></path>
+                                        <path d="M12 7h.01"></path>
+                                        <path d="M4 12a8 8 0 1 0 16 0 8 8 0 0 0-16 0z"></path>
+                                    </svg>
+                                    <span class="sr-only" data-verbose-label>Show detailed live status</span>
+                                </button>
+                                <button class="button compact icon-button" type="button" aria-label="Enter focus view" title="Focus view tanpa mengunci taskbar" data-live-fullscreen>
                                     <svg aria-hidden="true" viewBox="0 0 24 24">
                                         <path d="M8 4H4v4"></path>
                                         <path d="M16 4h4v4"></path>
                                         <path d="M20 16v4h-4"></path>
                                         <path d="M4 16v4h4"></path>
                                     </svg>
-                                    <span class="sr-only" data-button-label>Enter fullscreen</span>
+                                    <span class="sr-only" data-button-label>Enter focus view</span>
                                 </button>
                                 <button class="button compact danger icon-button" type="button" aria-label="Stop control" title="Stop control (Ctrl+Alt+Escape)" data-live-stop>
                                     <svg aria-hidden="true" viewBox="0 0 24 24">

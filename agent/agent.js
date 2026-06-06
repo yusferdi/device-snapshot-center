@@ -10,7 +10,7 @@ import robot from "robotjs";
 import screenshotDesktop from "screenshot-desktop";
 
 const execFileAsync = promisify(execFile);
-const AGENT_VERSION = "1.8.2";
+const AGENT_VERSION = "1.8.3";
 const AGENT_BOOT_ID = crypto.randomUUID();
 const AGENT_BOOT_STARTED_AT = Date.now();
 const CONFIG_PATH = path.resolve("agent.config.json");
@@ -107,7 +107,7 @@ async function loadConfig() {
     allowFileTransfer: Boolean(config.allowFileTransfer),
     allowSessionRecording: Boolean(config.allowSessionRecording),
     screenCaptureQuality: Number(config.screenCaptureQuality || 72),
-    wheelScrollMultiplier: clampNumber(config.wheelScrollMultiplier, 0.25, 5, 1),
+    wheelScrollMultiplier: clampNumber(config.wheelScrollMultiplier, 0.25, 5, 1.5),
   };
 }
 

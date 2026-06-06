@@ -11,9 +11,9 @@
   const idleStatusIntervalMs = Math.max(2000, Number(root.dataset.idleStatusInterval || 5000));
   const defaultPointerBatchMs = Math.max(24, Number(root.dataset.pointerBatch || 48));
   const pointerMaxEvents = Math.max(4, Number(root.dataset.pointerMaxEvents || 64));
-  const wheelPixelPerLine = Math.max(8, Number(root.dataset.wheelPixelPerLine || 32));
+  const wheelPixelPerLine = Math.max(8, Number(root.dataset.wheelPixelPerLine || 16));
   const wheelPageLines = Math.max(3, Number(root.dataset.wheelPageLines || 12));
-  const wheelMaxLines = Math.max(3, Number(root.dataset.wheelMaxLines || 60));
+  const wheelMaxLines = Math.max(3, Number(root.dataset.wheelMaxLines || 90));
   const speedProfiles = {
     eco: {
       capture: Math.max(3500, defaultCaptureIntervalMs + 2000),
@@ -40,6 +40,7 @@
   const refreshButton = root.querySelector("[data-live-refresh]");
   const fullscreenButton = root.querySelector("[data-live-fullscreen]");
   const gridButton = root.querySelector("[data-live-grid]");
+  const verboseButton = root.querySelector("[data-live-verbose]");
   const speedButtons = Array.from(root.querySelectorAll("[data-live-speed]"));
   const stopButton = root.querySelector("[data-live-stop]");
   const viewer = root.querySelector("[data-live-viewer]");
@@ -85,6 +86,8 @@
   let wheelRemainderX = 0;
   let wheelRemainderY = 0;
   let liveRttMs = null;
+  let focusModeActive = false;
+  let detailStatusEnabled = localStorage.getItem("dsc_live_detail_status") === "on";
   const remoteKeysDown = new Set();
   const pointerEventsSupported = "PointerEvent" in window;
 
@@ -116,8 +119,23 @@
     tabButton.addEventListener("click", () => activateWorkspacePanel(tabButton.dataset.workspaceTab || "devices"));
   });
 
-  function setStatus(text) {
+  function setStatus(text, options = {}) {
+    if (options.detail && !detailStatusEnabled) {
+      return;
+    }
     status.textContent = text;
+  }
+
+  function updateVerboseState() {
+    root.dataset.detailStatus = detailStatusEnabled ? "on" : "off";
+    if (!verboseButton) {
+      return;
+    }
+    const label = detailStatusEnabled ? "Hide detailed live status" : "Show detailed live status";
+    verboseButton.setAttribute("aria-pressed", detailStatusEnabled ? "true" : "false");
+    verboseButton.setAttribute("aria-label", label);
+    verboseButton.setAttribute("title", label);
+    verboseButton.querySelector("[data-verbose-label]")?.replaceChildren(label);
   }
 
   function setMode(text, state) {
@@ -363,7 +381,9 @@
       const agentVersion = data.device?.agent_version ? ` · v${data.device.agent_version}` : "";
       if (data.device?.online) {
         root.dataset.agentState = "online";
-        setStatus(`Agent connected${agentVersion} · ${Number.isFinite(ageSeconds) ? `${Math.round(ageSeconds)}s ago` : "active"}`);
+        setStatus(detailStatusEnabled
+          ? `Agent connected${agentVersion} · ${Number.isFinite(ageSeconds) ? `${Math.round(ageSeconds)}s ago` : "active"}`
+          : "Agent online");
       } else {
         root.dataset.agentState = "offline";
         setStatus(data.device?.last_seen ? `Agent offline${agentVersion} · last seen ${data.device.last_seen}` : "Agent belum pernah terhubung");
@@ -496,7 +516,7 @@
     }
     syncControlState();
     if (controlToggle.checked) {
-      setStatus(pointerCanStream() ? "Kontrol pointer dan drag aktif" : "Kontrol klik kompatibel aktif");
+      setStatus(pointerCanStream() ? "Kontrol pointer dan drag aktif" : "Kontrol klik kompatibel aktif", { detail: true });
     }
   });
 
@@ -507,7 +527,7 @@
     syncControlState();
     if (keyboardToggle.checked) {
       stage?.focus({ preventScroll: true });
-      setStatus("Keyboard aktif");
+      setStatus("Keyboard aktif", { detail: true });
     }
   });
 
@@ -517,33 +537,23 @@
   });
 
   function updateFullscreenState() {
-    const active = document.fullscreenElement === viewer;
-    root.dataset.fullscreen = active ? "on" : "off";
+    root.dataset.fullscreen = focusModeActive ? "on" : "off";
+    viewer?.classList.toggle("is-focus-mode", focusModeActive);
+    document.body.classList.toggle("live-focus-active", focusModeActive);
     if (fullscreenButton) {
-      const label = active ? "Exit fullscreen" : "Enter fullscreen";
+      const label = focusModeActive ? "Exit focus view" : "Enter focus view";
+      const title = focusModeActive ? "Exit focus view" : "Focus view tanpa mengunci taskbar";
       fullscreenButton.setAttribute("aria-label", label);
-      fullscreenButton.setAttribute("title", label);
+      fullscreenButton.setAttribute("title", title);
       fullscreenButton.querySelector("[data-button-label]")?.replaceChildren(label);
     }
   }
 
-  async function toggleFullscreen() {
-    if (!document.fullscreenEnabled) {
-      setStatus("Fullscreen tidak didukung browser");
-      return;
-    }
-
-    try {
-      if (document.fullscreenElement === viewer) {
-        await document.exitFullscreen();
-      } else {
-        await viewer.requestFullscreen();
-        stage?.focus({ preventScroll: true });
-      }
-      updateFullscreenState();
-    } catch (error) {
-      setStatus(error.message || "Fullscreen gagal");
-    }
+  function toggleFullscreen() {
+    focusModeActive = !focusModeActive;
+    updateFullscreenState();
+    stage?.focus({ preventScroll: true });
+    setStatus(focusModeActive ? "Focus view aktif" : "Focus view nonaktif");
   }
 
   fullscreenButton?.addEventListener("click", toggleFullscreen);
@@ -551,6 +561,13 @@
     const active = root.dataset.grid !== "on";
     root.dataset.grid = active ? "on" : "off";
     gridButton.setAttribute("aria-pressed", active ? "true" : "false");
+    setStatus(active ? "Grid koordinat aktif" : "Grid koordinat nonaktif");
+  });
+  verboseButton?.addEventListener("click", () => {
+    detailStatusEnabled = !detailStatusEnabled;
+    localStorage.setItem("dsc_live_detail_status", detailStatusEnabled ? "on" : "off");
+    updateVerboseState();
+    setStatus(detailStatusEnabled ? "Detail status aktif" : "Detail status sunyi");
   });
   speedButtons.forEach((button) => {
     button.addEventListener("click", () => setLiveSpeed(button.dataset.liveSpeed || "flow"));
@@ -569,7 +586,13 @@
     }
   });
   stopButton?.addEventListener("click", panicOff);
-  document.addEventListener("fullscreenchange", updateFullscreenState);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && focusModeActive) {
+      focusModeActive = false;
+      updateFullscreenState();
+      setStatus("Focus view nonaktif");
+    }
+  });
 
   deviceSelect?.addEventListener("change", () => {
     cancelPointerGesture("Device diganti");
@@ -772,7 +795,7 @@
     pointerState = null;
     pointerEpoch = Date.now();
     pointerSequence = 0;
-    setStatus(reason);
+    setStatus(reason, { detail: true });
   }
 
   function clickName(button, double) {
@@ -797,7 +820,7 @@
     try {
       await postLive("click", { x, y, button, double });
       setQueue({ pending_capture: false, pending_click: true });
-      setStatus(`${clickName(button, double)} dikirim: ${x}, ${y}`);
+      setStatus(`${clickName(button, double)} dikirim: ${x}, ${y}`, { detail: true });
       window.setTimeout(requestFrame, 450);
     } catch (error) {
       setStatus(error.message);
@@ -948,7 +971,7 @@
       .then(async () => {
         const data = await postLive("key", payload);
         setQueue(data);
-        setStatus(payload.kind === "text" ? "Keyboard text dikirim" : `Keyboard ${payload.key} dikirim`);
+        setStatus(payload.kind === "text" ? "Keyboard text dikirim" : `Keyboard ${payload.key} dikirim`, { detail: true });
       })
       .catch((error) => {
         setStatus(error.message);
@@ -979,7 +1002,7 @@
     }
     [...remoteKeysDown].reverse().forEach((key) => sendRemoteKeyState(key, "up"));
     if (reason) {
-      setStatus(reason);
+      setStatus(reason, { detail: true });
     }
   }
 
@@ -1005,7 +1028,7 @@
       appendPointerEvent("down", event, button);
       startPointerKeepalive();
       flushPointerEvents();
-      setStatus(`Pointer ${button} aktif`);
+      setStatus(`Pointer ${button} aktif`, { detail: true });
     } catch (error) {
       cancelPointerGesture(error.message);
     }
@@ -1050,7 +1073,7 @@
       if (stage.hasPointerCapture(event.pointerId)) {
         stage.releasePointerCapture(event.pointerId);
       }
-      setStatus(type === "up" ? "Pointer selesai" : "Pointer dibatalkan");
+      setStatus(type === "up" ? "Pointer selesai" : "Pointer dibatalkan", { detail: true });
       window.setTimeout(requestFrame, 180);
     } catch (error) {
       cancelPointerGesture(error.message);
@@ -1225,6 +1248,7 @@
   }
   updateSwitchAria();
   updateSpeedButtons();
+  updateVerboseState();
   updateFullscreenState();
   stopLive();
 })();
