@@ -102,7 +102,7 @@ npm.cmd install
 node agent.js
 ```
 
-Agent akan enroll sekali, menyimpan token di `agent/agent.state.json`, lalu memulai HTTP polling dan mengikuti pilihan metode dari dashboard. Jika request panjang diblokir proxy, circuit breaker otomatis turun ke short-poll tanpa restart agent.
+Agent menyimpan token di `agent/agent.state.json`, lalu memulai HTTP polling dan mengikuti pilihan metode dari dashboard. Jika token ditolak setelah deployment atau pemulihan database, agent otomatis melakukan enrollment ulang. Jika request panjang diblokir proxy, circuit breaker otomatis turun ke short-poll tanpa restart agent.
 
 ## Fitur Yang Ada
 

@@ -10,7 +10,7 @@ import robot from "robotjs";
 import screenshotDesktop from "screenshot-desktop";
 
 const execFileAsync = promisify(execFile);
-const AGENT_VERSION = "1.8.0";
+const AGENT_VERSION = "1.8.1";
 const AGENT_BOOT_ID = crypto.randomUUID();
 const AGENT_BOOT_STARTED_AT = Date.now();
 const CONFIG_PATH = path.resolve("agent.config.json");
@@ -200,6 +200,14 @@ async function enrollIfNeeded(config, state) {
   await writeJson(STATE_PATH, state);
   console.log(`[agent] enrolled as device_id=${state.deviceId}`);
   return state;
+}
+
+async function reenroll(config, state) {
+  delete state.deviceId;
+  delete state.deviceToken;
+  state.serverUrl = config.serverUrl;
+  await writeJson(STATE_PATH, state);
+  return enrollIfNeeded(config, state);
 }
 
 function summarizeSystemInfo() {
@@ -1327,6 +1335,20 @@ async function main() {
         && /superseded|boot-session support/i.test(String(error.message || ""))
       ) {
         throw error;
+      }
+      if (error.status === 401) {
+        activeTransport = "";
+        releaseActiveMouseButtons("authentication rejected");
+        releaseActiveKeyboardKeys("authentication rejected");
+        console.log("[agent] saved token was rejected; re-enrolling device");
+        try {
+          await reenroll(config, state);
+          reconnectDelayMs = config.reconnectMinMs;
+          consecutivePollErrors = 0;
+          continue;
+        } catch (enrollError) {
+          console.error(`[agent] re-enrollment failed: ${enrollError.message}`);
+        }
       }
       console.error(`[agent] poll error: ${error.message}`);
       consecutivePollErrors += 1;

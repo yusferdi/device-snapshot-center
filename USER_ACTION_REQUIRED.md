@@ -1,20 +1,18 @@
 # User Action Required
 
-Pengingat ini tetap aktif sampai deployment production terverifikasi.
+Status production pada 6 Juni 2026: selesai.
 
-1. Deploy seluruh isi folder `server/` dari branch `main` ke folder fisik yang melayani:
+Verifier production sudah menghasilkan `PASS` dan agent sudah terhubung kembali melalui auto re-enrollment.
 
-```text
-https://lppsp.ui.ac.id/any/server
-```
+Pengingat tetap untuk setiap deployment berikutnya:
 
-2. Pertahankan `.env` production dan folder upload. Set `APP_RELEASE` ke commit SHA terbaru.
-3. Pastikan rewrite website utama tidak menangkap file yang benar-benar ada di `/any/server`. Detail contoh Apache/Nginx ada di `DEPLOYMENT.md`.
-4. Reset OPcache atau restart PHP-FPM/web server jika `opcache.validate_timestamps=0`.
-5. Jalankan dari root proyek:
+1. Deploy seluruh folder `server/` sebagai satu release dan pertahankan `.env` production serta folder upload.
+2. Pastikan rewrite website utama tidak menangkap file nyata di `/any/server`.
+3. Reset OPcache atau restart PHP-FPM/web server jika `opcache.validate_timestamps=0`.
+4. Jalankan dari root proyek:
 
 ```powershell
 node scripts/verify-deployment.mjs https://lppsp.ui.ac.id/any/server
 ```
 
-Tindakan selesai hanya ketika verifier menghasilkan `PASS`. Sampai saat itu, setiap respons Codex harus mengingatkan checklist ini.
+Deployment berikutnya selesai hanya ketika verifier menghasilkan `PASS` dan heartbeat agent tidak memiliki error.
