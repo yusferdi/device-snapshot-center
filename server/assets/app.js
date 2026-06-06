@@ -59,6 +59,7 @@
   const deviceCards = Array.from(document.querySelectorAll("[data-device-card]"));
   const workspaceTabs = Array.from(document.querySelectorAll("[data-workspace-tab]"));
   const workspacePanels = Array.from(document.querySelectorAll("[data-workspace-panel]"));
+  const uploadZones = Array.from(document.querySelectorAll("[data-upload-zone]"));
 
   let statusTimer = null;
   let captureTimer = null;
@@ -124,6 +125,89 @@
   workspaceTabs.forEach((tabButton) => {
     tabButton.addEventListener("click", () => activateWorkspacePanel(tabButton.dataset.workspaceTab || "devices"));
   });
+
+  function formatUploadBytes(bytes) {
+    const value = Number(bytes || 0);
+    if (!Number.isFinite(value) || value <= 0) {
+      return "0 B";
+    }
+    const units = ["B", "KB", "MB", "GB"];
+    let amount = value;
+    let unitIndex = 0;
+    while (amount >= 1024 && unitIndex < units.length - 1) {
+      amount /= 1024;
+      unitIndex += 1;
+    }
+    return `${amount >= 10 || unitIndex === 0 ? Math.round(amount) : amount.toFixed(1)} ${units[unitIndex]}`;
+  }
+
+  function updateUploadZone(zone, input) {
+    const file = input.files?.[0] || null;
+    const label = zone.querySelector("[data-upload-file-name]");
+    zone.classList.toggle("has-file", Boolean(file));
+    zone.classList.remove("is-dragging");
+    if (label) {
+      label.textContent = file ? `${file.name} - ${formatUploadBytes(file.size)}` : "atau klik untuk pilih file";
+    }
+  }
+
+  uploadZones.forEach((zone) => {
+    const input = zone.querySelector("[data-upload-input]");
+    if (!input) {
+      return;
+    }
+
+    input.addEventListener("change", () => updateUploadZone(zone, input));
+    zone.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        input.click();
+      }
+    });
+
+    ["dragenter", "dragover"].forEach((eventName) => {
+      zone.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        zone.classList.add("is-dragging");
+      });
+    });
+
+    ["dragleave", "dragend"].forEach((eventName) => {
+      zone.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        zone.classList.remove("is-dragging");
+      });
+    });
+
+    zone.addEventListener("drop", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const file = event.dataTransfer?.files?.[0];
+      if (!file || typeof DataTransfer === "undefined") {
+        updateUploadZone(zone, input);
+        return;
+      }
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      input.files = transfer.files;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    updateUploadZone(zone, input);
+  });
+
+  if (uploadZones.length) {
+    document.addEventListener("dragover", (event) => {
+      event.preventDefault();
+    });
+    document.addEventListener("drop", (event) => {
+      if (!event.target?.closest?.("[data-upload-zone]")) {
+        event.preventDefault();
+      }
+    });
+  }
 
   function setStatus(text, options = {}) {
     if (options.detail && !detailStatusEnabled) {

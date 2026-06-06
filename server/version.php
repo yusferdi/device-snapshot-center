@@ -32,6 +32,7 @@ json_response([
         'live_zoom' => true,
         'focus_toolbar_compact' => true,
         'low_latency_http_tuning' => true,
+        'drag_drop_upload' => true,
     ],
     'files' => $files,
     'generated_at' => gmdate('c'),

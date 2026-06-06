@@ -138,6 +138,7 @@ Agent menyimpan token di `agent/agent.state.json`, lalu memulai HTTP polling dan
 - Agent `1.6+` memakai keyboard state `down/up`, mendukung tahan tombol, key repeat OS, Backspace, Delete, arrow, F1-F24, modifier, numpad, dan media key.
 - Koordinat pointer memakai ukuran layar kontrol agent, sehingga tetap presisi saat ukuran screenshot dan DPI Windows berbeda.
 - File transfer dua arah melalui folder `fileTransferRoot`, hanya jika `allowFileTransfer` aktif.
+- Upload file ke agent memakai dropzone drag-and-drop dengan fallback klik/pilih file.
 - Session recording menghasilkan artifact HTML replay dari frame screenshot, hanya jika `allowSessionRecording` aktif.
 - Tombol Stop dan `Ctrl+Alt+Escape` mematikan live view serta mode kontrol. Saat keyboard remote aktif, `Escape` dikirim ke device.
 - Watchdog agent otomatis melepas tombol mouse yang masih tertahan ketika transport terputus atau pointer berhenti mengirim event.

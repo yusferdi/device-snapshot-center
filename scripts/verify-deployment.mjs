@@ -103,6 +103,9 @@ if (remoteVersion) {
   if (remoteVersion.features?.low_latency_http_tuning !== true) {
     failures.push("remote release does not advertise low_latency_http_tuning");
   }
+  if (remoteVersion.features?.drag_drop_upload !== true) {
+    failures.push("remote release does not advertise drag_drop_upload");
+  }
   if (remoteVersion.release !== expected.release) {
     console.log(`[verify] remote release label ${remoteVersion.release} differs from auto hash; validating file hashes`);
   }

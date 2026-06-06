@@ -722,7 +722,20 @@ header('X-App-Release: ' . app_release());
                         </label>
                         <label>
                             File
-                            <input type="file" name="transfer_file" required>
+                            <span class="drop-upload" role="button" tabindex="0" data-upload-zone>
+                                <input class="drop-upload-input" type="file" name="transfer_file" required data-upload-input>
+                                <span class="drop-upload-icon" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24">
+                                        <path d="M12 16V4"></path>
+                                        <path d="M7 9l5-5 5 5"></path>
+                                        <path d="M5 20h14"></path>
+                                    </svg>
+                                </span>
+                                <span class="drop-upload-copy">
+                                    <strong>Drop file di sini</strong>
+                                    <span data-upload-file-name>atau klik untuk pilih file</span>
+                                </span>
+                            </span>
                         </label>
                         <label>
                             Nama tujuan
