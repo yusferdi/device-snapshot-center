@@ -87,7 +87,7 @@ Copy-Item agent\agent.config.example.json agent\agent.config.json
 - `initialTransportMode`: metode awal agent, default `poll`; dashboard dapat menggantinya tanpa restart.
 - `heartbeatLogMs`: interval heartbeat log saat agent idle, default `30000`.
 - `enrollmentCode`: samakan dengan `APP_ENROLLMENT_CODE` di `.env`
-- `wheelScrollMultiplier`: tuning scroll khusus device agent, default `4`; naikkan bertahap bila wheel perangkat masih terasa lambat, turunkan bila terlalu agresif.
+- `wheelScrollMultiplier`: tuning scroll khusus device agent, default `16`; turunkan bila wheel terlalu agresif.
 - `deviceName`: nama yang muncul di dashboard
 - `logDirectory`: folder log yang boleh dibaca agent
 - `fileTransferRoot`: folder aman untuk file transfer dua arah
@@ -182,7 +182,11 @@ Prototype ini sengaja tidak menyediakan arbitrary shell command atau akses file 
 
 Fondasi saat ini memulai agent melalui `http-poll`, dengan `http-long-poll` tersedia sebagai metode yang dapat dipilih dari dashboard. Server mengirim preferensi transport pada setiap respons poll, sehingga metode dapat berubah tanpa restart agent.
 
-Dashboard menyimpan `transport_mode` per device dan metode efektif terakhir. `Polling` adalah default. Pilihan `Long poll` akan tetap jatuh ke `Polling` jika runtime server tidak mendukung request panjang; `Auto` mempertahankan metode stabil saat ini dan circuit breaker agent tetap dapat fallback ke polling.
+`Polling` berarti agent bertanya ke server secara berkala lalu tidur sebentar. `Long poll` berarti agent membuka request yang ditahan server sampai ada command baru atau timeout, sehingga command bisa lebih cepat diterima tanpa spam request kosong. `Auto` mempertahankan metode stabil dan membiarkan agent fallback jika long-poll diblokir proxy.
+
+Dashboard menyimpan `transport_mode` per device dan metode efektif terakhir. `Polling` adalah default. Pilihan `Long poll` akan tetap jatuh ke `Polling` jika runtime server tidak mendukung request panjang.
+
+WebRTC belum tersedia sebagai transport aktif. Opsi ini membutuhkan signaling endpoint, STUN/TURN, dan data/media channel agent sebelum bisa dipilih dari dashboard.
 
 - `APP_AGENT_LONG_POLL_MS=15000`: durasi tunggu request agent; isi `0` untuk memaksa short-poll.
 - `APP_AGENT_POLL_PROBE_MS=120`: ritme server memeriksa command selama long-poll.

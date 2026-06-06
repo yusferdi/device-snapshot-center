@@ -546,6 +546,7 @@ header('X-App-Release: ' . app_release());
                                     <?php foreach (transport_modes() as $transportKey => $transportLabel): ?>
                                         <option value="<?= h($transportKey) ?>"><?= h($transportLabel) ?></option>
                                     <?php endforeach; ?>
+                                    <option value="webrtc" disabled>WebRTC (not available)</option>
                                 </select>
                             </div>
                         </div>

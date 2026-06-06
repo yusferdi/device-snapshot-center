@@ -9,7 +9,7 @@ import robot from "robotjs";
 import screenshotDesktop from "screenshot-desktop";
 
 const execFileAsync = promisify(execFile);
-const AGENT_VERSION = "1.8.5";
+const AGENT_VERSION = "1.8.6";
 const AGENT_BOOT_ID = crypto.randomUUID();
 const AGENT_BOOT_STARTED_AT = Date.now();
 const CONFIG_PATH = path.resolve("agent.config.json");
@@ -114,7 +114,7 @@ async function loadConfig() {
       DEFAULT_MAX_CLIPBOARD_TEXT_BYTES
     )),
     screenCaptureQuality: Number(config.screenCaptureQuality || 72),
-    wheelScrollMultiplier: clampNumber(config.wheelScrollMultiplier, 0.25, 8, 4),
+    wheelScrollMultiplier: clampNumber(config.wheelScrollMultiplier, 0.25, 32, 16),
   };
 }
 

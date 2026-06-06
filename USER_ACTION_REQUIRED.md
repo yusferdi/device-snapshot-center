@@ -1,6 +1,6 @@
 # User Action Required
 
-Status production pada 6 Juni 2026: perlu deploy ulang setelah fitur remote clipboard dan tuning wheel sensitivity.
+Status production pada 6 Juni 2026: perlu deploy ulang setelah fitur remote clipboard, tuning wheel sensitivity 16x, dan penanda WebRTC belum tersedia.
 
 Verifier production terakhir masih `FAILED` karena server live belum memiliki release lokal terbaru dan belum mengiklankan `remote_clipboard`.
 
