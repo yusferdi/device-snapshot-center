@@ -11,6 +11,9 @@
   const idleStatusIntervalMs = Math.max(2000, Number(root.dataset.idleStatusInterval || 5000));
   const defaultPointerBatchMs = Math.max(24, Number(root.dataset.pointerBatch || 48));
   const pointerMaxEvents = Math.max(4, Number(root.dataset.pointerMaxEvents || 64));
+  const wheelPixelPerLine = Math.max(8, Number(root.dataset.wheelPixelPerLine || 32));
+  const wheelPageLines = Math.max(3, Number(root.dataset.wheelPageLines || 12));
+  const wheelMaxLines = Math.max(3, Number(root.dataset.wheelMaxLines || 60));
   const speedProfiles = {
     eco: {
       capture: Math.max(3500, defaultCaptureIntervalMs + 2000),
@@ -79,6 +82,8 @@
   let pointerInputAvailable = false;
   let keyboardStateAvailable = false;
   let wheelInputAvailable = false;
+  let wheelRemainderX = 0;
+  let wheelRemainderY = 0;
   let liveRttMs = null;
   const remoteKeysDown = new Set();
   const pointerEventsSupported = "PointerEvent" in window;
@@ -1125,19 +1130,36 @@
       return;
     }
     event.preventDefault();
-    const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 3 : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? 12 : 80;
-    const normalizeWheel = (value) => {
+    const normalizeWheel = (value, axis) => {
       if (!value) {
         return 0;
       }
-      return Math.max(-20, Math.min(20, -Math.sign(value) * Math.max(1, Math.round(Math.abs(value) / unit))));
+      const lineDelta = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+        ? -value
+        : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+          ? -value * wheelPageLines
+          : -value / wheelPixelPerLine;
+      const accumulated = lineDelta + (axis === "x" ? wheelRemainderX : wheelRemainderY);
+      const normalized = Math.max(-wheelMaxLines, Math.min(wheelMaxLines, Math.trunc(accumulated)));
+      const remainder = normalized === Math.trunc(accumulated) ? accumulated - normalized : 0;
+      if (axis === "x") {
+        wheelRemainderX = remainder;
+      } else {
+        wheelRemainderY = remainder;
+      }
+      return normalized;
     };
+    const deltaX = normalizeWheel(event.deltaX, "x");
+    const deltaY = normalizeWheel(event.deltaY, "y");
+    if (!deltaX && !deltaY) {
+      return;
+    }
     pointerEvents.push({
       type: "wheel",
       button: "middle",
       sequence: ++pointerSequence,
-      deltaX: normalizeWheel(event.deltaX),
-      deltaY: normalizeWheel(event.deltaY),
+      deltaX,
+      deltaY,
     });
     schedulePointerFlush();
   }, { passive: false });

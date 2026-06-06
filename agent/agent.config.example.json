@@ -17,5 +17,6 @@
   "allowRemoteControl": true,
   "allowKeyboardInput": true,
   "allowFileTransfer": true,
-  "allowSessionRecording": true
+  "allowSessionRecording": true,
+  "wheelScrollMultiplier": 1
 }

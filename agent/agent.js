@@ -10,7 +10,7 @@ import robot from "robotjs";
 import screenshotDesktop from "screenshot-desktop";
 
 const execFileAsync = promisify(execFile);
-const AGENT_VERSION = "1.8.1";
+const AGENT_VERSION = "1.8.2";
 const AGENT_BOOT_ID = crypto.randomUUID();
 const AGENT_BOOT_STARTED_AT = Date.now();
 const CONFIG_PATH = path.resolve("agent.config.json");
@@ -107,6 +107,7 @@ async function loadConfig() {
     allowFileTransfer: Boolean(config.allowFileTransfer),
     allowSessionRecording: Boolean(config.allowSessionRecording),
     screenCaptureQuality: Number(config.screenCaptureQuality || 72),
+    wheelScrollMultiplier: clampNumber(config.wheelScrollMultiplier, 0.25, 5, 1),
   };
 }
 
@@ -762,8 +763,18 @@ async function mouseInput(config, payload) {
         continue;
       }
       if (type === "wheel") {
-        const deltaX = clampInteger(event?.deltaX, -20, 20, 0);
-        const deltaY = clampInteger(event?.deltaY, -20, 20, 0);
+        const deltaX = clampInteger(
+          Math.round(clampInteger(event?.deltaX, -120, 120, 0) * config.wheelScrollMultiplier),
+          -120,
+          120,
+          0
+        );
+        const deltaY = clampInteger(
+          Math.round(clampInteger(event?.deltaY, -120, 120, 0) * config.wheelScrollMultiplier),
+          -120,
+          120,
+          0
+        );
         if (deltaX || deltaY) {
           robot.scrollMouse(deltaX, deltaY);
         }

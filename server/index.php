@@ -440,6 +440,9 @@ header('X-App-Release: ' . app_release());
                 data-idle-status-interval="<?= (int) ($liveConfig['idle_status_interval_ms'] ?? 5000) ?>"
                 data-pointer-batch="<?= (int) ($liveConfig['pointer_batch_ms'] ?? 48) ?>"
                 data-pointer-max-events="<?= (int) ($liveConfig['pointer_max_events'] ?? 64) ?>"
+                data-wheel-pixel-per-line="<?= (int) ($liveConfig['wheel_pixel_per_line'] ?? 32) ?>"
+                data-wheel-page-lines="<?= (int) ($liveConfig['wheel_page_lines'] ?? 12) ?>"
+                data-wheel-max-lines="<?= (int) ($liveConfig['wheel_max_lines'] ?? 60) ?>"
             >
                 <div class="panel-heading">
                     <div>

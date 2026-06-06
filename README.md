@@ -87,6 +87,7 @@ Copy-Item agent\agent.config.example.json agent\agent.config.json
 - `initialTransportMode`: metode awal agent, default `poll`; dashboard dapat menggantinya tanpa restart.
 - `heartbeatLogMs`: interval heartbeat log saat agent idle, default `30000`.
 - `enrollmentCode`: samakan dengan `APP_ENROLLMENT_CODE` di `.env`
+- `wheelScrollMultiplier`: tuning scroll khusus device agent, default `1`; naikkan bertahap bila wheel perangkat masih terasa lambat.
 - `deviceName`: nama yang muncul di dashboard
 - `logDirectory`: folder log yang boleh dibaca agent
 - `fileTransferRoot`: folder aman untuk file transfer dua arah
@@ -193,5 +194,8 @@ Dashboard menyimpan `transport_mode` per device dan metode efektif terakhir. `Po
 - `APP_POINTER_RELEASE_TIMEOUT_MS=2500`: watchdog pelepas tombol mouse.
 - `APP_POINTER_COMMAND_TTL_SECONDS=3`: membuang event pointer live yang sudah basi sebelum agent mengambilnya.
 - `APP_INPUT_COMMAND_TTL_SECONDS=5`: membuang klik dan input keyboard live yang terlambat.
+- `APP_WHEEL_PIXEL_PER_LINE=32`: kalibrasi pixel wheel/trackpad menjadi baris scroll remote.
+- `APP_WHEEL_PAGE_LINES=12`: jumlah baris untuk event scroll bertipe page.
+- `APP_WHEEL_MAX_LINES=60`: batas baris scroll per event agar gesture besar tetap terkendali.
 
 Lapisan berikutnya dapat menambahkan WSS dan WebRTC sebagai transport lebih cepat tanpa menghapus fallback HTTP ini.

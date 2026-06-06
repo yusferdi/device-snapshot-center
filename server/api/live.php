@@ -105,7 +105,9 @@ function live_keyboard_payload(array $body): array
 function live_pointer_payload(array $body): array
 {
     $events = $body['events'] ?? null;
-    $maxEvents = (int) ((app_config()['live'] ?? [])['pointer_max_events'] ?? 64);
+    $liveConfig = app_config()['live'] ?? [];
+    $maxEvents = (int) ($liveConfig['pointer_max_events'] ?? 64);
+    $wheelMaxLines = (int) ($liveConfig['wheel_max_lines'] ?? 60);
     if (!is_array($events) || $events === [] || count($events) > $maxEvents) {
         json_response(['ok' => false, 'error' => 'Batch pointer tidak valid'], 400);
     }
@@ -139,8 +141,8 @@ function live_pointer_payload(array $body): array
             $normalized['y'] = $y;
         }
         if ($type === 'wheel') {
-            $normalized['deltaX'] = max(-20, min(20, (int) ($event['deltaX'] ?? 0)));
-            $normalized['deltaY'] = max(-20, min(20, (int) ($event['deltaY'] ?? 0)));
+            $normalized['deltaX'] = max(-$wheelMaxLines, min($wheelMaxLines, (int) ($event['deltaX'] ?? 0)));
+            $normalized['deltaY'] = max(-$wheelMaxLines, min($wheelMaxLines, (int) ($event['deltaY'] ?? 0)));
             if ($normalized['deltaX'] === 0 && $normalized['deltaY'] === 0) {
                 continue;
             }
