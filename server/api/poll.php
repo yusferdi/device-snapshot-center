@@ -70,6 +70,7 @@ $queuedCommandStmt = $pdo->prepare(
          WHEN 'keyboard_state' THEN 0
          WHEN 'mouse_click' THEN 1
          WHEN 'keyboard_input' THEN 1
+         WHEN 'clipboard_write' THEN 1
          WHEN 'capture_screen' THEN 3
          ELSE 2
        END ASC,

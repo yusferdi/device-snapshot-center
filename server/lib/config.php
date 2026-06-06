@@ -153,6 +153,7 @@ $config = [
         'mouse_input' => 'Input pointer realtime',
         'keyboard_input' => 'Input keyboard',
         'keyboard_state' => 'Input keyboard stateful',
+        'clipboard_write' => 'Clipboard: tulis/paste text',
         'file_list' => 'File manager: daftar file',
         'file_pull' => 'File manager: ambil file',
         'file_put' => 'File manager: kirim file',

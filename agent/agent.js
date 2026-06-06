@@ -1,5 +1,4 @@
-import { execFile } from "node:child_process";
-import { execSync } from "child_process";
+import { execFile, execSync, spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -10,12 +9,13 @@ import robot from "robotjs";
 import screenshotDesktop from "screenshot-desktop";
 
 const execFileAsync = promisify(execFile);
-const AGENT_VERSION = "1.8.3";
+const AGENT_VERSION = "1.8.4";
 const AGENT_BOOT_ID = crypto.randomUUID();
 const AGENT_BOOT_STARTED_AT = Date.now();
 const CONFIG_PATH = path.resolve("agent.config.json");
 const EXAMPLE_CONFIG_PATH = path.resolve("agent.config.example.json");
 const STATE_PATH = path.resolve("agent.state.json");
+const DEFAULT_MAX_CLIPBOARD_TEXT_BYTES = 8192;
 
 const DIAGNOSTIC_COMMANDS = {
   node_version: {
@@ -104,8 +104,15 @@ async function loadConfig() {
     allowScreenCapture: Boolean(config.allowScreenCapture),
     allowRemoteControl: Boolean(config.allowRemoteControl),
     allowKeyboardInput: Boolean(config.allowKeyboardInput),
+    allowClipboardPaste: config.allowClipboardPaste !== false,
     allowFileTransfer: Boolean(config.allowFileTransfer),
     allowSessionRecording: Boolean(config.allowSessionRecording),
+    maxClipboardTextBytes: Math.round(clampNumber(
+      config.maxClipboardTextBytes,
+      256,
+      262144,
+      DEFAULT_MAX_CLIPBOARD_TEXT_BYTES
+    )),
     screenCaptureQuality: Number(config.screenCaptureQuality || 72),
     wheelScrollMultiplier: clampNumber(config.wheelScrollMultiplier, 0.25, 5, 1.5),
   };
@@ -500,6 +507,57 @@ async function removeQuietly(targetPath) {
   } catch {
     // Temp cleanup is best-effort.
   }
+}
+
+async function runProcessWithInput(file, args, input, timeoutMs, label) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(file, args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const finish = (error, result = null) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      if (error) {
+        reject(error);
+      } else {
+        resolve(result);
+      }
+    };
+
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(new Error(`${label} timed out after ${timeoutMs}ms.`));
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", (error) => {
+      finish(new Error(`${label} failed: ${error.message}`));
+    });
+    child.on("close", (code) => {
+      if (code === 0) {
+        finish(null, { stdout, stderr });
+      } else {
+        const details = stderr.trim() || stdout.trim();
+        finish(new Error(`${label} exited with code ${code}${details ? `: ${details}` : ""}`));
+      }
+    });
+
+    child.stdin.on("error", () => {});
+    child.stdin.end(input, "utf8");
+  });
 }
 
 let cachedDisplays = [];
@@ -917,6 +975,97 @@ async function keyboardInput(config, payload) {
   };
 }
 
+function clipboardTextFromPayload(payload, maxBytes) {
+  const text = String(payload?.text ?? "");
+  const bytes = Buffer.byteLength(text, "utf8");
+  if (text.trim() === "") {
+    throw new Error("payload.text is required.");
+  }
+  if (text.includes("\u0000")) {
+    throw new Error("payload.text cannot contain NUL bytes.");
+  }
+  if (bytes > maxBytes) {
+    throw new Error(`payload.text is too large (${bytes} bytes, max ${maxBytes}).`);
+  }
+  return { text, bytes };
+}
+
+async function writeClipboardText(text) {
+  const timeoutMs = 6000;
+
+  if (process.platform === "win32") {
+    try {
+      await runProcessWithInput(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          "[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false); $value = [Console]::In.ReadToEnd(); Set-Clipboard -Value $value",
+        ],
+        text,
+        timeoutMs,
+        "PowerShell Set-Clipboard"
+      );
+      return "powershell";
+    } catch (powershellError) {
+      await runProcessWithInput("clip.exe", [], text, timeoutMs, `clip.exe fallback after ${powershellError.message}`);
+      return "clip.exe";
+    }
+  }
+
+  if (process.platform === "darwin") {
+    await runProcessWithInput("pbcopy", [], text, timeoutMs, "pbcopy");
+    return "pbcopy";
+  }
+
+  const candidates = [
+    ["wl-copy", []],
+    ["xclip", ["-selection", "clipboard"]],
+    ["xsel", ["--clipboard", "--input"]],
+  ];
+  const errors = [];
+  for (const [file, args] of candidates) {
+    try {
+      await runProcessWithInput(file, args, text, timeoutMs, file);
+      return file;
+    } catch (error) {
+      errors.push(error.message);
+    }
+  }
+
+  throw new Error(`No supported Linux clipboard tool worked: ${errors.join("; ")}`);
+}
+
+async function clipboardWrite(config, payload) {
+  if (!config.allowRemoteControl || !config.allowClipboardPaste) {
+    throw new Error("Remote clipboard paste is disabled in agent.config.json.");
+  }
+
+  const paste = payload?.paste !== false;
+  if (paste && !config.allowKeyboardInput) {
+    throw new Error("Paste requires allowKeyboardInput in agent.config.json.");
+  }
+
+  const { text, bytes } = clipboardTextFromPayload(payload, config.maxClipboardTextBytes);
+  const method = await writeClipboardText(text);
+
+  if (paste) {
+    await sleep(70);
+    const modifier = process.platform === "darwin" ? "command" : "control";
+    robot.keyTap("v", [modifier]);
+  }
+
+  return {
+    kind: "clipboard",
+    bytes,
+    characters: [...text].length,
+    pasted: paste,
+    method,
+    appliedAt: new Date().toISOString(),
+  };
+}
+
 const activeKeyboardKeys = new Set();
 let keyboardReleaseTimer = null;
 
@@ -1135,6 +1284,15 @@ async function handleCommand(config, state, command) {
 
     case "keyboard_state": {
       const result = await keyboardState(config, payload);
+      await complete(config, state, id, {
+        status: "succeeded",
+        result_json: result,
+      });
+      return;
+    }
+
+    case "clipboard_write": {
+      const result = await clipboardWrite(config, payload);
       await complete(config, state, id, {
         status: "succeeded",
         result_json: result,

@@ -703,9 +703,9 @@ function device_action_allowed(array $device, string $action): bool
     $base = ['health_check', 'system_info', 'network_interfaces', 'list_log_files', 'upload_log_file', 'run_diagnostic', 'capture_screen'];
     $groups = [
         'view' => $base,
-        'control' => array_merge($base, ['mouse_click', 'mouse_input', 'keyboard_input', 'keyboard_state', 'record_session']),
+        'control' => array_merge($base, ['mouse_click', 'mouse_input', 'keyboard_input', 'keyboard_state', 'clipboard_write', 'record_session']),
         'files' => array_merge($base, ['file_list', 'file_pull', 'file_put']),
-        'full' => array_merge($base, ['mouse_click', 'mouse_input', 'keyboard_input', 'keyboard_state', 'file_list', 'file_pull', 'file_put', 'record_session']),
+        'full' => array_merge($base, ['mouse_click', 'mouse_input', 'keyboard_input', 'keyboard_state', 'clipboard_write', 'file_list', 'file_pull', 'file_put', 'record_session']),
     ];
 
     return in_array($action, $groups[$profile] ?? $groups['full'], true);
@@ -806,7 +806,7 @@ function has_pending_action(int $deviceId, string $action): bool
 
 function pending_action_flags(int $deviceId): array
 {
-    $actions = ['capture_screen', 'mouse_click', 'mouse_input', 'keyboard_input', 'keyboard_state'];
+    $actions = ['capture_screen', 'mouse_click', 'mouse_input', 'keyboard_input', 'keyboard_state', 'clipboard_write'];
     $flags = array_fill_keys($actions, false);
     $placeholders = implode(',', array_fill(0, count($actions), '?'));
     $stmt = db()->prepare(

@@ -365,6 +365,7 @@ json_response([
     'pending_pointer' => $pending['mouse_input'],
     'pending_keyboard' => $pending['keyboard_input'],
     'pending_keyboard_state' => $pending['keyboard_state'],
+    'pending_clipboard' => $pending['clipboard_write'],
     'transport' => [
         'profile' => 'adaptive-http',
         'requested' => (string) ($device['transport_mode'] ?? 'poll'),

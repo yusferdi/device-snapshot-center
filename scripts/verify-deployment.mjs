@@ -91,6 +91,9 @@ if (remoteVersion) {
   if (remoteVersion.features?.live_command_expiry !== true) {
     failures.push("remote release does not advertise live_command_expiry");
   }
+  if (remoteVersion.features?.remote_clipboard !== true) {
+    failures.push("remote release does not advertise remote_clipboard");
+  }
   if (remoteVersion.release !== expected.release) {
     console.log(`[verify] remote release label ${remoteVersion.release} differs from auto hash; validating file hashes`);
   }

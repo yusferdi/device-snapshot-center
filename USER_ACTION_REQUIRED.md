@@ -1,8 +1,8 @@
 # User Action Required
 
-Status production pada 6 Juni 2026: selesai.
+Status production pada 6 Juni 2026: perlu deploy ulang setelah fitur remote clipboard.
 
-Verifier production sudah menghasilkan `PASS` dan agent sudah terhubung kembali melalui auto re-enrollment.
+Verifier production terakhir masih `FAILED` karena server live belum memiliki release lokal terbaru dan belum mengiklankan `remote_clipboard`.
 
 Pengingat tetap untuk setiap deployment berikutnya:
 
@@ -15,4 +15,4 @@ Pengingat tetap untuk setiap deployment berikutnya:
 node scripts/verify-deployment.mjs https://lppsp.ui.ac.id/any/server
 ```
 
-Deployment berikutnya selesai hanya ketika verifier menghasilkan `PASS` dan heartbeat agent tidak memiliki error.
+Deployment selesai hanya ketika verifier menghasilkan `PASS` dan heartbeat agent tidak memiliki error.

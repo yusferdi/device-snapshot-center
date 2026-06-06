@@ -92,6 +92,8 @@ Copy-Item agent\agent.config.example.json agent\agent.config.json
 - `logDirectory`: folder log yang boleh dibaca agent
 - `fileTransferRoot`: folder aman untuk file transfer dua arah
 - `allowKeyboardInput`: aktifkan input keyboard remote jika memang dibutuhkan
+- `allowClipboardPaste`: aktifkan copy/paste clipboard dari dashboard ke agent
+- `maxClipboardTextBytes`: batas ukuran text clipboard, default `8192`
 - `allowFileTransfer`: aktifkan file manager remote
 - `allowSessionRecording`: aktifkan recording artifact berbasis screenshot
 
@@ -131,6 +133,7 @@ Agent menyimpan token di `agent/agent.state.json`, lalu memulai HTTP polling dan
 - Drag yang sedang ditahan mengirim keepalive sehingga tombol mouse tidak dilepas watchdog saat pointer diam.
 - Mouse wheel vertikal/horizontal dikirim sebagai pointer input. Tombol focus view memperbesar layar remote di dalam jendela browser tanpa mengunci taskbar Windows.
 - Input keyboard jarak jauh melalui action `keyboard_input`, hanya jika `allowRemoteControl` dan `allowKeyboardInput` aktif di config agent.
+- Copy/paste clipboard dari dashboard ke agent melalui action `clipboard_write`; agent menulis clipboard OS, lalu opsional langsung menjalankan paste ke window aktif.
 - Agent `1.6+` memakai keyboard state `down/up`, mendukung tahan tombol, key repeat OS, Backspace, Delete, arrow, F1-F24, modifier, numpad, dan media key.
 - Koordinat pointer memakai ukuran layar kontrol agent, sehingga tetap presisi saat ukuran screenshot dan DPI Windows berbeda.
 - File transfer dua arah melalui folder `fileTransferRoot`, hanya jika `allowFileTransfer` aktif.
@@ -153,6 +156,7 @@ Agent menyimpan token di `agent/agent.state.json`, lalu memulai HTTP polling dan
 - `mouse_input`: batch pointer berurutan untuk move dan drag-and-drop. Action ini bersifat ephemeral sehingga hasil sukses segera dibersihkan dan tidak memenuhi tabel command/audit.
 - `keyboard_input`: input keyboard dari live view. Payload mendukung `kind=text` untuk karakter biasa atau `kind=key` untuk tombol seperti `enter`, `backspace`, `left`, `right`, dan modifier `control`, `alt`, `shift`.
 - `keyboard_state`: event keyboard ephemeral `down/up` untuk pengalaman input stateful agent `1.6+`.
+- `clipboard_write`: tulis text ke clipboard agent dan opsional paste ke window aktif. Payload mendukung `text` dan `paste`.
 - `file_list`: daftar isi folder transfer agent.
 - `file_pull`: ambil file dari folder transfer agent sebagai artifact dashboard.
 - `file_put`: kirim upload dashboard ke folder transfer agent.

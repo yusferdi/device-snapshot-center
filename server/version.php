@@ -28,6 +28,7 @@ json_response([
         'idle_agent_status' => true,
         'agent_boot_recovery' => true,
         'live_command_expiry' => true,
+        'remote_clipboard' => true,
     ],
     'files' => $files,
     'generated_at' => gmdate('c'),

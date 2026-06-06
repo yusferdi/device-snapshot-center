@@ -252,12 +252,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['form'] ?? '') === 'send_cl
         require_csrf();
         $deviceId = (int) ($_POST['device_id'] ?? 0);
         require_existing_device($deviceId);
-        $text = clean_text((string) ($_POST['text'] ?? ''), 512);
-        if ($text === '') {
-            throw new RuntimeException('Text wajib diisi.');
+        $text = str_replace(["\r\n", "\r"], "\n", (string) ($_POST['text'] ?? ''));
+        $maxBytes = 8192;
+        if (trim($text) === '') {
+            throw new RuntimeException('Clipboard text wajib diisi.');
         }
-        queue_device_command($deviceId, 'keyboard_input', ['kind' => 'text', 'text' => $text]);
-        $message = 'Text dikirim sebagai input keyboard.';
+        if (strlen($text) > $maxBytes) {
+            throw new RuntimeException('Clipboard text maksimal 8 KB.');
+        }
+        if (strpos($text, "\0") !== false) {
+            throw new RuntimeException('Clipboard text tidak boleh berisi byte NUL.');
+        }
+        if (function_exists('mb_check_encoding') && !mb_check_encoding($text, 'UTF-8')) {
+            throw new RuntimeException('Clipboard text harus UTF-8 valid.');
+        }
+        $pasteNow = ($_POST['paste_now'] ?? '') === '1';
+        queue_device_command($deviceId, 'clipboard_write', [
+            'text' => $text,
+            'paste' => $pasteNow,
+        ]);
+        $message = $pasteNow
+            ? 'Clipboard agent diperbarui dan paste diminta.'
+            : 'Clipboard agent diperbarui.';
     } catch (Throwable $th) {
         $error = $th->getMessage();
     }
@@ -704,8 +720,8 @@ header('X-App-Release: ' . app_release());
                 <div class="panel">
                     <div class="panel-heading">
                         <div>
-                            <h2>Assist Tools</h2>
-                            <p>Send-text dan session recording eksplisit.</p>
+                            <h2>Clipboard & Recording</h2>
+                            <p>Copy/paste ke agent dan session recording eksplisit.</p>
                         </div>
                     </div>
                     <form method="post" action="<?= h(app_url()) ?>">
@@ -720,10 +736,14 @@ header('X-App-Release: ' . app_release());
                             </select>
                         </label>
                         <label>
-                            Type text ke remote
-                            <textarea name="text" rows="4" maxlength="512" placeholder="Text akan diketik ke device remote, bukan sync clipboard diam-diam."></textarea>
+                            Clipboard text
+                            <textarea name="text" rows="4" maxlength="8192" placeholder="Text akan disalin ke clipboard agent. Centang paste untuk langsung Ctrl+V di window aktif."></textarea>
                         </label>
-                        <button class="button" type="submit">Kirim Text</button>
+                        <label class="switch-row">
+                            <input type="checkbox" name="paste_now" value="1" checked>
+                            <span>Paste ke window aktif</span>
+                        </label>
+                        <button class="button" type="submit">Copy/Paste ke Agent</button>
                     </form>
                     <form method="post" action="<?= h(app_url()) ?>">
                         <input type="hidden" name="form" value="record_session">
