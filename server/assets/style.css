@@ -217,28 +217,6 @@ p {
   box-shadow: 0 0 0 4px rgb(16 124 65 / 10%);
 }
 
-.live-panel:fullscreen {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  width: 100vw;
-  height: 100vh;
-  margin: 0;
-  padding: 12px;
-  border: 0;
-  border-radius: 0;
-  background: var(--panel);
-}
-
-.live-panel:fullscreen .panel-heading {
-  align-items: center;
-  margin-bottom: 10px;
-}
-
-.live-panel:fullscreen .live-workspace {
-  height: 100%;
-  min-height: 0;
-}
-
 .live-panel .panel-heading {
   order: 1;
   display: grid;
@@ -328,17 +306,6 @@ p {
 
 .access-cluster {
   grid-template-columns: 1fr;
-}
-
-.view-cluster {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.view-cluster .control-cluster-title {
-  width: 100%;
-  margin-bottom: 1px;
 }
 
 .live-controls .button.compact {
@@ -606,6 +573,20 @@ label:has(> select)::after {
   outline-offset: 2px;
 }
 
+.live-viewer {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #05080e;
+}
+
+.live-viewer:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  background: #000;
+}
+
 .live-stage {
   position: relative;
   display: grid;
@@ -646,7 +627,7 @@ label:has(> select)::after {
   outline-offset: 3px;
 }
 
-.live-panel:fullscreen .live-stage {
+.live-viewer:fullscreen .live-stage {
   height: 100%;
   min-height: 0;
   border-radius: 0;
@@ -690,23 +671,78 @@ label:has(> select)::after {
   font-weight: 700;
 }
 
+.live-viewer-bar {
+  position: absolute;
+  z-index: 3;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 54px;
+  padding: 10px 12px;
+  background: linear-gradient(180deg, transparent, rgb(0 0 0 / 82%));
+  opacity: .2;
+  transition: opacity 160ms ease;
+}
+
+.live-viewer:hover .live-viewer-bar,
+.live-viewer:focus-within .live-viewer-bar,
+.live-viewer:fullscreen .live-viewer-bar,
+[data-live-dashboard][data-control="on"] .live-viewer-bar {
+  opacity: 1;
+}
+
+.live-viewer:fullscreen .live-viewer-bar {
+  min-height: 72px;
+  padding: 18px 20px;
+}
+
 .live-status {
-  order: 3;
-  min-height: 20px;
-  margin-top: 0;
-  color: var(--muted);
+  min-width: 0;
+  margin: 0;
+  color: #e2e8f0;
   font-size: 13px;
   font-weight: 700;
   overflow-wrap: anywhere;
 }
 
 [data-live-dashboard][data-agent-state="online"] .live-status {
-  color: var(--success);
+  color: #7ee2aa;
 }
 
 [data-live-dashboard][data-agent-state="offline"] .live-status,
 [data-live-dashboard][data-agent-state="error"] .live-status {
   color: var(--danger);
+}
+
+.live-view-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+}
+
+.live-view-actions .icon-button {
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  border-color: rgb(255 255 255 / 18%);
+  color: #fff;
+  background: rgb(15 23 42 / 72%);
+  backdrop-filter: blur(8px);
+}
+
+.live-view-actions .icon-button:hover {
+  color: #fff;
+  background: rgb(15 23 42 / 96%);
+}
+
+.live-view-actions .button.danger {
+  color: #fecaca;
+  background: rgb(127 29 29 / 72%);
 }
 
 .device-cards {
@@ -1162,12 +1198,6 @@ pre {
     width: auto;
   }
 
-  .view-cluster {
-    align-content: flex-start;
-    align-items: flex-start;
-    flex-wrap: wrap;
-  }
-
   .compact-label,
   .segmented-control,
   .live-controls .button,
@@ -1182,11 +1212,6 @@ pre {
 
   .switch-row {
     min-height: 34px;
-  }
-
-  .live-controls .view-cluster .icon-button {
-    width: 34px;
-    min-width: 34px;
   }
 
   .live-stage {
@@ -1237,6 +1262,27 @@ pre {
 
   .live-stage {
     height: min(42vh, 360px);
+  }
+
+  .live-viewer-bar {
+    gap: 6px;
+    min-height: 50px;
+    padding: 7px 8px;
+    opacity: 1;
+  }
+
+  .live-status {
+    font-size: 11px;
+  }
+
+  .live-view-actions {
+    gap: 4px;
+  }
+
+  .live-view-actions .icon-button {
+    width: 34px;
+    min-width: 34px;
+    height: 34px;
   }
 
   .control-cluster {
@@ -1341,6 +1387,12 @@ pre {
   pre {
     width: 100%;
     max-width: none;
+  }
+}
+
+@media (hover: none) {
+  .live-viewer-bar {
+    opacity: 1;
   }
 }
 

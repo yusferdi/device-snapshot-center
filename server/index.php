@@ -453,9 +453,48 @@ header('X-App-Release: ' . app_release());
                     </div>
                 </div>
                 <div class="live-workspace">
-                    <div class="live-stage" tabindex="0" aria-label="Live remote screen" data-live-stage>
-                        <img data-live-screen alt="Live screen">
-                        <div class="live-empty" data-live-empty>Belum ada frame.</div>
+                    <div class="live-viewer" data-live-viewer>
+                        <div class="live-stage" tabindex="0" aria-label="Live remote screen" data-live-stage>
+                            <img data-live-screen alt="Live screen">
+                            <div class="live-empty" data-live-empty>Belum ada frame.</div>
+                        </div>
+                        <div class="live-viewer-bar">
+                            <div class="live-status" data-live-status>Idle</div>
+                            <div class="live-view-actions" aria-label="Screen view controls">
+                                <button class="button compact icon-button" type="button" aria-label="Capture frame" title="Capture frame" data-live-refresh>
+                                    <svg aria-hidden="true" viewBox="0 0 24 24">
+                                        <path d="M20 12a8 8 0 0 1-13.6 5.7l-1.8-1.8"></path>
+                                        <path d="M4 12A8 8 0 0 1 17.6 6.3l1.8 1.8"></path>
+                                        <path d="M4 18v-4h4"></path>
+                                        <path d="M20 6v4h-4"></path>
+                                    </svg>
+                                    <span class="sr-only">Capture frame</span>
+                                </button>
+                                <button class="button compact secondary icon-button" type="button" aria-label="Toggle grid" title="Toggle grid" aria-pressed="false" data-live-grid>
+                                    <svg aria-hidden="true" viewBox="0 0 24 24">
+                                        <path d="M4 4h16v16H4z"></path>
+                                        <path d="M4 12h16"></path>
+                                        <path d="M12 4v16"></path>
+                                    </svg>
+                                    <span class="sr-only">Toggle grid</span>
+                                </button>
+                                <button class="button compact icon-button" type="button" aria-label="Enter fullscreen" title="Enter fullscreen" data-live-fullscreen>
+                                    <svg aria-hidden="true" viewBox="0 0 24 24">
+                                        <path d="M8 4H4v4"></path>
+                                        <path d="M16 4h4v4"></path>
+                                        <path d="M20 16v4h-4"></path>
+                                        <path d="M4 16v4h4"></path>
+                                    </svg>
+                                    <span class="sr-only" data-button-label>Enter fullscreen</span>
+                                </button>
+                                <button class="button compact danger icon-button" type="button" aria-label="Stop control" title="Stop control (Ctrl+Alt+Escape)" data-live-stop>
+                                    <svg aria-hidden="true" viewBox="0 0 24 24">
+                                        <path d="M7 7h10v10H7z"></path>
+                                    </svg>
+                                    <span class="sr-only">Stop control</span>
+                                </button>
+                            </div>
+                        </div>
                     </div>
                     <aside class="live-controls" aria-label="Live session controls">
                         <div class="control-cluster device-cluster">
@@ -506,44 +545,8 @@ header('X-App-Release: ' . app_release());
                                 <span>Keys</span>
                             </label>
                         </div>
-                        <div class="control-cluster view-cluster">
-                            <span class="control-cluster-title">View</span>
-                            <button class="button compact icon-button" type="button" aria-label="Capture frame" title="Capture frame" data-live-refresh>
-                                <svg aria-hidden="true" viewBox="0 0 24 24">
-                                    <path d="M20 12a8 8 0 0 1-13.6 5.7l-1.8-1.8"></path>
-                                    <path d="M4 12A8 8 0 0 1 17.6 6.3l1.8 1.8"></path>
-                                    <path d="M4 18v-4h4"></path>
-                                    <path d="M20 6v4h-4"></path>
-                                </svg>
-                                <span class="sr-only">Capture frame</span>
-                            </button>
-                            <button class="button compact secondary icon-button" type="button" aria-label="Toggle grid" title="Toggle grid" aria-pressed="false" data-live-grid>
-                                <svg aria-hidden="true" viewBox="0 0 24 24">
-                                    <path d="M4 4h16v16H4z"></path>
-                                    <path d="M4 12h16"></path>
-                                    <path d="M12 4v16"></path>
-                                </svg>
-                                <span class="sr-only">Toggle grid</span>
-                            </button>
-                            <button class="button compact icon-button" type="button" aria-label="Enter fullscreen" title="Enter fullscreen" data-live-fullscreen>
-                                <svg aria-hidden="true" viewBox="0 0 24 24">
-                                    <path d="M8 4H4v4"></path>
-                                    <path d="M16 4h4v4"></path>
-                                    <path d="M20 16v4h-4"></path>
-                                    <path d="M4 16v4h4"></path>
-                                </svg>
-                                <span class="sr-only" data-button-label>Enter fullscreen</span>
-                            </button>
-                            <button class="button compact danger icon-button" type="button" aria-label="Stop control" title="Stop control (Ctrl+Alt+Escape)" data-live-stop>
-                                <svg aria-hidden="true" viewBox="0 0 24 24">
-                                    <path d="M7 7h10v10H7z"></path>
-                                </svg>
-                                <span class="sr-only">Stop control</span>
-                            </button>
-                        </div>
                     </aside>
                 </div>
-                <div class="live-status" data-live-status>Idle</div>
             </section>
         <?php endif; ?>
 

@@ -39,6 +39,7 @@
   const gridButton = root.querySelector("[data-live-grid]");
   const speedButtons = Array.from(root.querySelectorAll("[data-live-speed]"));
   const stopButton = root.querySelector("[data-live-stop]");
+  const viewer = root.querySelector("[data-live-viewer]");
   const stage = root.querySelector("[data-live-stage]");
   const screen = root.querySelector("[data-live-screen]");
   const empty = root.querySelector("[data-live-empty]");
@@ -511,7 +512,7 @@
   });
 
   function updateFullscreenState() {
-    const active = document.fullscreenElement === root;
+    const active = document.fullscreenElement === viewer;
     root.dataset.fullscreen = active ? "on" : "off";
     if (fullscreenButton) {
       const label = active ? "Exit fullscreen" : "Enter fullscreen";
@@ -528,10 +529,10 @@
     }
 
     try {
-      if (document.fullscreenElement === root) {
+      if (document.fullscreenElement === viewer) {
         await document.exitFullscreen();
       } else {
-        await root.requestFullscreen();
+        await viewer.requestFullscreen();
         stage?.focus({ preventScroll: true });
       }
       updateFullscreenState();
