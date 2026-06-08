@@ -115,32 +115,52 @@ Agent menyimpan token di `agent/agent.state.json`, lalu memulai HTTP polling dan
 
 Agent `1.10+` membaca ulang config lokal secara berkala. Perubahan seperti interval, permission, WebRTC, wheel multiplier, folder transfer/log, dan `preventSleepWhileRunning` bisa aktif saat proses masih berjalan. Jika `serverUri` atau `enrollmentCode` berubah, agent akan mencoba re-enroll ke server baru; untuk perpindahan production yang rapi, gunakan tombol `Save + Restart` di Agent Manager.
 
-## Agent Manager GUI
+## Native Agent Manager
 
-Agent punya GUI lokal berbasis Node.js untuk mengubah config dan mengontrol proses tanpa membuka file JSON manual:
+Agent punya manager native Windows untuk mengubah config dan mengontrol proses tanpa membuka file JSON manual. Jalur ini paling nyaman untuk device baru karena bisa menyiapkan Node.js dan dependency agent otomatis:
+
+```powershell
+cd agent
+.\Device Snapshot Agent Manager.cmd
+```
+
+Atau dari PowerShell:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\native-manager.ps1
+```
+
+Fitur Native Agent Manager:
+
+- berjalan sebagai window Windows native, bukan halaman browser;
+- mencari Node.js dari `DEVICE_SNAPSHOT_NODE`, runtime portable lokal, atau `PATH`;
+- tombol `Bootstrap Node + Dependencies` mengunduh Node.js LTS portable dari `nodejs.org`, lalu menjalankan `npm install --omit=dev`;
+- edit `serverUri`, enrollment code, nama device, interval polling, WebRTC toggle, scroll multiplier, folder log/transfer, dan capability toggles;
+- `Save` untuk hot-reload config yang didukung;
+- `Save + Restart` untuk restart agent setelah perubahan besar;
+- start, stop, dan restart agent lokal;
+- install/start/stop/uninstall Scheduled Task `DeviceSnapshotAgent`;
+- memilih `NodePath` dan opsi `WakeToRun` jika Windows/hardware mengizinkan wake timer;
+- membaca log `agent-native`, `agent-service`, `supervisor`, dan `npm-install`.
+
+Native manager dapat berjalan sebelum Node.js tersedia karena dibuat dengan PowerShell/WinForms bawaan Windows. Runtime Node portable yang diunduh disimpan di `agent/runtime/node/` dan tidak ikut Git.
+
+## Web Agent Manager
+
+Selain manager native, masih tersedia GUI lokal berbasis Node.js:
 
 ```powershell
 cd agent
 npm.cmd run manager
 ```
 
-Secara default GUI terbuka di:
+Secara default GUI web terbuka di:
 
 ```text
 http://127.0.0.1:8765/
 ```
 
-Fitur Agent Manager:
-
-- edit `serverUri`, enrollment code, nama device, interval polling, WebRTC ICE server, scroll multiplier, folder log/transfer, dan capability toggles;
-- `Save` untuk hot-reload config yang didukung;
-- `Save + Restart` untuk restart agent setelah perubahan besar;
-- start, stop, dan restart agent lokal;
-- install/start/stop/uninstall Scheduled Task `DeviceSnapshotAgent`;
-- memilih `NodePath` dan opsi `WakeToRun` jika Windows/hardware mengizinkan wake timer;
-- membaca log `agent-gui`, `agent-service`, dan `supervisor`.
-
-GUI ini hanya bind ke `127.0.0.1`, sehingga panel manager tidak dibuka ke jaringan publik.
+GUI web hanya bind ke `127.0.0.1`, sehingga panel manager tidak dibuka ke jaringan publik.
 
 Untuk menjalankan agent Windows tanpa logon, buka PowerShell sebagai Administrator di folder `agent/`, lalu jalankan:
 

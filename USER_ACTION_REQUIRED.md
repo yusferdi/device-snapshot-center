@@ -21,8 +21,7 @@ Setelah server PASS, jalankan di device agent:
 
 ```powershell
 cd agent
-npm.cmd install
-npm.cmd run manager
+.\Device Snapshot Agent Manager.cmd
 ```
 
-Dari Agent Manager, simpan config production, lalu gunakan `Install Auto Start` untuk membuat Scheduled Task `DeviceSnapshotAgent` sebagai `SYSTEM` agar agent berjalan sejak boot sebelum Windows logon.
+Dari Native Agent Manager, klik `Bootstrap Node + Dependencies` bila Node/dependency belum siap, simpan config production, lalu gunakan `Install Auto Start` untuk membuat Scheduled Task `DeviceSnapshotAgent` sebagai `SYSTEM` agar agent berjalan sejak boot sebelum Windows logon. Untuk install task, buka manager sebagai Administrator atau klik `Relaunch as Admin`.

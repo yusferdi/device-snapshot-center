@@ -1,0 +1,798 @@
+param(
+    [string] $AgentRoot = $PSScriptRoot,
+    [string] $TaskName = "DeviceSnapshotAgent",
+    [switch] $SelfTest
+)
+
+$ErrorActionPreference = "Stop"
+$AgentRoot = (Resolve-Path -LiteralPath $AgentRoot).Path
+$ConfigPath = Join-Path $AgentRoot "agent.config.json"
+$ExampleConfigPath = Join-Path $AgentRoot "agent.config.example.json"
+$RuntimeRoot = Join-Path $AgentRoot "runtime"
+$LogRoot = Join-Path $AgentRoot "logs"
+$NodeRuntimeRoot = Join-Path $RuntimeRoot "node"
+
+function Ensure-Directory {
+    param([string] $Path)
+    New-Item -ItemType Directory -Force -Path $Path | Out-Null
+}
+
+function Test-IsAdmin {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Get-JsonFile {
+    param([string] $Path, [object] $Fallback = $null)
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $Fallback
+    }
+    $raw = Get-Content -Raw -LiteralPath $Path
+    if (-not $raw.Trim()) {
+        return $Fallback
+    }
+    return $raw | ConvertFrom-Json
+}
+
+function Set-JsonProperty {
+    param([object] $Object, [string] $Name, [object] $Value)
+    if ($Object.PSObject.Properties.Name -contains $Name) {
+        $Object.$Name = $Value
+    } else {
+        $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value
+    }
+}
+
+function Save-JsonFile {
+    param([string] $Path, [object] $Value)
+    $json = $Value | ConvertTo-Json -Depth 32
+    Set-Content -LiteralPath $Path -Value $json -Encoding UTF8
+}
+
+function Get-AgentConfig {
+    $example = Get-JsonFile -Path $ExampleConfigPath -Fallback ([pscustomobject]@{})
+    $local = Get-JsonFile -Path $ConfigPath -Fallback ([pscustomobject]@{})
+    $merged = [pscustomobject]@{}
+    foreach ($prop in $example.PSObject.Properties) {
+        Set-JsonProperty $merged $prop.Name $prop.Value
+    }
+    foreach ($prop in $local.PSObject.Properties) {
+        Set-JsonProperty $merged $prop.Name $prop.Value
+    }
+    return $merged
+}
+
+function Get-NodePath {
+    if ($env:DEVICE_SNAPSHOT_NODE -and (Test-Path -LiteralPath $env:DEVICE_SNAPSHOT_NODE)) {
+        return (Resolve-Path -LiteralPath $env:DEVICE_SNAPSHOT_NODE).Path
+    }
+    $bundled = @(
+        (Join-Path $NodeRuntimeRoot "node.exe")
+    ) + @(Get-ChildItem -Path $NodeRuntimeRoot -Filter node.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+    foreach ($candidate in $bundled) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+    $command = Get-Command node.exe -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
+    return $null
+}
+
+function Get-NpmPath {
+    param([string] $NodePath)
+    if ($NodePath) {
+        $localNpm = Join-Path (Split-Path -Parent $NodePath) "npm.cmd"
+        if (Test-Path -LiteralPath $localNpm) {
+            return $localNpm
+        }
+    }
+    $command = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
+    return $null
+}
+
+function Invoke-HiddenProcess {
+    param(
+        [string] $FilePath,
+        [string[]] $ArgumentList,
+        [string] $WorkingDirectory = $AgentRoot,
+        [string] $Stdout = "",
+        [string] $Stderr = "",
+        [switch] $Wait
+    )
+    $params = @{
+        FilePath = $FilePath
+        ArgumentList = $ArgumentList
+        WorkingDirectory = $WorkingDirectory
+        WindowStyle = "Hidden"
+        PassThru = $true
+    }
+    if ($Stdout) { $params.RedirectStandardOutput = $Stdout }
+    if ($Stderr) { $params.RedirectStandardError = $Stderr }
+    $process = Start-Process @params
+    if ($Wait) {
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) {
+            throw "$FilePath exited with code $($process.ExitCode)."
+        }
+    }
+    return $process
+}
+
+function Install-PortableNode {
+    Ensure-Directory $RuntimeRoot
+    Ensure-Directory $LogRoot
+    $indexUrl = "https://nodejs.org/dist/index.json"
+    $index = Invoke-RestMethod -Uri $indexUrl -UseBasicParsing
+    $release = $index | Where-Object {
+        $_.lts -and ($_.files -contains "win-x64-zip")
+    } | Select-Object -First 1
+    if (-not $release) {
+        throw "Could not find a Windows x64 LTS Node.js release from nodejs.org."
+    }
+
+    $version = [string] $release.version
+    $zipUrl = "https://nodejs.org/dist/$version/node-$version-win-x64.zip"
+    $zipPath = Join-Path $env:TEMP "device-snapshot-node-$version-win-x64.zip"
+    $extractPath = Join-Path $RuntimeRoot ("node-extract-" + [guid]::NewGuid().ToString("N"))
+    Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
+    Expand-Archive -LiteralPath $zipPath -DestinationPath $extractPath -Force
+    $folder = Get-ChildItem -Path $extractPath -Directory | Select-Object -First 1
+    if (-not $folder) {
+        throw "Node.js archive did not contain an extracted folder."
+    }
+
+    $resolvedRuntime = (Resolve-Path -LiteralPath $RuntimeRoot).Path
+    $target = Join-Path $RuntimeRoot "node"
+    if ((Test-Path -LiteralPath $target) -and ((Resolve-Path -LiteralPath $target).Path.StartsWith($resolvedRuntime))) {
+        Remove-Item -LiteralPath $target -Recurse -Force
+    }
+    Move-Item -LiteralPath $folder.FullName -Destination $target
+    Remove-Item -LiteralPath $extractPath -Recurse -Force
+    Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+
+    $node = Join-Path $target "node.exe"
+    if (-not (Test-Path -LiteralPath $node)) {
+        throw "Downloaded Node.js but node.exe was not found."
+    }
+    return $node
+}
+
+function Install-AgentDependencies {
+    param([string] $NodePath)
+    Ensure-Directory $LogRoot
+    $npm = Get-NpmPath -NodePath $NodePath
+    if (-not $npm) {
+        throw "npm.cmd was not found. Install or download Node.js first."
+    }
+    Invoke-HiddenProcess `
+        -FilePath $npm `
+        -ArgumentList @("install", "--omit=dev") `
+        -WorkingDirectory $AgentRoot `
+        -Stdout (Join-Path $LogRoot "npm-install.log") `
+        -Stderr (Join-Path $LogRoot "npm-install.err.log") `
+        -Wait | Out-Null
+}
+
+function Get-AgentProcesses {
+    if ($PSVersionTable.PSVersion.Major -lt 3) {
+        return @()
+    }
+    $items = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.CommandLine -and
+        $_.CommandLine.Contains("agent.js") -and
+        $_.CommandLine.Contains($AgentRoot) -and
+        -not $_.CommandLine.Contains("agent-manager.js") -and
+        -not $_.CommandLine.Contains("native-manager.ps1")
+    } | Select-Object ProcessId, Name, CommandLine)
+    return $items
+}
+
+function Start-AgentProcess {
+    param([string] $NodePath)
+    if (-not $NodePath) {
+        throw "Node.js was not found. Click Bootstrap Node + Dependencies first."
+    }
+    Ensure-Directory $LogRoot
+    $process = Invoke-HiddenProcess `
+        -FilePath $NodePath `
+        -ArgumentList @("agent.js") `
+        -WorkingDirectory $AgentRoot `
+        -Stdout (Join-Path $LogRoot "agent-native.log") `
+        -Stderr (Join-Path $LogRoot "agent-native.err.log")
+    return $process.Id
+}
+
+function Stop-AgentProcess {
+    $processes = @(Get-AgentProcesses)
+    foreach ($item in $processes) {
+        taskkill.exe /PID $item.ProcessId /T /F | Out-Null
+    }
+    return $processes.Count
+}
+
+function Get-TaskStatus {
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if (-not $task) {
+        return [pscustomobject]@{
+            Installed = $false
+            State = "Not installed"
+            UserId = ""
+            WakeToRun = $false
+        }
+    }
+    return [pscustomobject]@{
+        Installed = $true
+        State = [string] $task.State
+        UserId = [string] $task.Principal.UserId
+        WakeToRun = [bool] $task.Settings.WakeToRun
+    }
+}
+
+function Install-AgentTask {
+    param([string] $NodePath, [bool] $WakeToRun)
+    if (-not (Test-IsAdmin)) {
+        throw "Installing the startup task requires PowerShell as Administrator."
+    }
+    $args = @(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        (Join-Path $AgentRoot "install-startup-task.ps1"),
+        "-TaskName",
+        $TaskName,
+        "-AgentRoot",
+        $AgentRoot,
+        "-NodePath",
+        $NodePath
+    )
+    if ($WakeToRun) {
+        $args += "-WakeToRun"
+    }
+    Invoke-HiddenProcess -FilePath "powershell.exe" -ArgumentList $args -WorkingDirectory $AgentRoot -Wait | Out-Null
+}
+
+function Invoke-TaskAction {
+    param([string] $Action)
+    if (-not (Test-IsAdmin)) {
+        throw "Task Scheduler changes require PowerShell as Administrator."
+    }
+    switch ($Action) {
+        "start" { Start-ScheduledTask -TaskName $TaskName }
+        "stop" { Stop-ScheduledTask -TaskName $TaskName }
+        "uninstall" {
+            if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+                Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+                Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+            }
+        }
+        default { throw "Unknown task action: $Action" }
+    }
+}
+
+function Get-LogTail {
+    param([string] $FileName)
+    $allowed = @(
+        "agent-native.log",
+        "agent-native.err.log",
+        "agent-service.log",
+        "agent-service.err.log",
+        "supervisor.log",
+        "npm-install.log",
+        "npm-install.err.log"
+    )
+    if ($allowed -notcontains $FileName) {
+        $FileName = "agent-native.log"
+    }
+    $filePath = Join-Path $LogRoot $FileName
+    if (-not (Test-Path -LiteralPath $filePath)) {
+        return ""
+    }
+    return (Get-Content -LiteralPath $filePath -Tail 160 -ErrorAction SilentlyContinue) -join [Environment]::NewLine
+}
+
+if ($SelfTest) {
+    $config = Get-AgentConfig
+    [pscustomobject]@{
+        ok = $true
+        agentRoot = $AgentRoot
+        nodePath = Get-NodePath
+        npmPath = Get-NpmPath -NodePath (Get-NodePath)
+        serverUri = $config.serverUri
+        task = Get-TaskStatus
+        agentProcesses = @(Get-AgentProcesses).Count
+    } | ConvertTo-Json -Depth 6
+    exit 0
+}
+
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+[System.Windows.Forms.Application]::EnableVisualStyles()
+
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "Device Snapshot Agent Manager"
+$form.StartPosition = "CenterScreen"
+$form.MinimumSize = New-Object System.Drawing.Size(980, 680)
+$form.Size = New-Object System.Drawing.Size(1120, 780)
+$form.BackColor = [System.Drawing.Color]::FromArgb(239, 242, 247)
+$form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+
+$root = New-Object System.Windows.Forms.TableLayoutPanel
+$root.Dock = "Fill"
+$root.RowCount = 3
+$root.ColumnCount = 1
+$root.Padding = New-Object System.Windows.Forms.Padding(14)
+$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 88))) | Out-Null
+$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
+$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 32))) | Out-Null
+$form.Controls.Add($root)
+
+$header = New-Object System.Windows.Forms.TableLayoutPanel
+$header.Dock = "Fill"
+$header.ColumnCount = 2
+$header.RowCount = 2
+$header.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 45))) | Out-Null
+$header.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 55))) | Out-Null
+$header.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 46))) | Out-Null
+$header.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 32))) | Out-Null
+$root.Controls.Add($header, 0, 0)
+
+$title = New-Object System.Windows.Forms.Label
+$title.Text = "Device Snapshot Agent Manager"
+$title.Dock = "Fill"
+$title.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 18)
+$title.ForeColor = [System.Drawing.Color]::FromArgb(28, 36, 51)
+$header.Controls.Add($title, 0, 0)
+
+$subtitle = New-Object System.Windows.Forms.Label
+$subtitle.Text = "Native Windows manager for Node agent, startup task, and live config"
+$subtitle.Dock = "Fill"
+$subtitle.ForeColor = [System.Drawing.Color]::FromArgb(92, 103, 120)
+$header.Controls.Add($subtitle, 0, 1)
+
+$statusPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+$statusPanel.Dock = "Fill"
+$statusPanel.FlowDirection = "LeftToRight"
+$statusPanel.WrapContents = $true
+$statusPanel.Anchor = "Right"
+$header.Controls.Add($statusPanel, 1, 0)
+$header.SetRowSpan($statusPanel, 2)
+
+function New-StatusLabel {
+    param([string] $Text)
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = $Text
+    $label.AutoSize = $false
+    $label.Width = 210
+    $label.Height = 28
+    $label.Margin = New-Object System.Windows.Forms.Padding(5)
+    $label.TextAlign = "MiddleCenter"
+    $label.BackColor = [System.Drawing.Color]::White
+    $label.ForeColor = [System.Drawing.Color]::FromArgb(62, 72, 88)
+    return $label
+}
+
+$nodeStatus = New-StatusLabel "Node: checking"
+$agentStatus = New-StatusLabel "Agent: checking"
+$taskStatus = New-StatusLabel "Task: checking"
+$adminStatus = New-StatusLabel ("Admin: " + ($(if (Test-IsAdmin) { "yes" } else { "no" })))
+$statusPanel.Controls.AddRange(@($nodeStatus, $agentStatus, $taskStatus, $adminStatus))
+
+$tabs = New-Object System.Windows.Forms.TabControl
+$tabs.Dock = "Fill"
+$root.Controls.Add($tabs, 0, 1)
+
+function New-Tab {
+    param([string] $Title)
+    $tab = New-Object System.Windows.Forms.TabPage
+    $tab.Text = $Title
+    $tab.BackColor = [System.Drawing.Color]::FromArgb(239, 242, 247)
+    $tabs.TabPages.Add($tab) | Out-Null
+    return $tab
+}
+
+function New-Button {
+    param([string] $Text)
+    $button = New-Object System.Windows.Forms.Button
+    $button.Text = $Text
+    $button.Width = 178
+    $button.Height = 42
+    $button.Margin = New-Object System.Windows.Forms.Padding(8)
+    return $button
+}
+
+function New-Field {
+    param([System.Windows.Forms.Control] $Parent, [string] $LabelText, [System.Windows.Forms.Control] $Control)
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = $LabelText
+    $label.Width = 170
+    $label.Height = 28
+    $label.Margin = New-Object System.Windows.Forms.Padding(8, 10, 4, 4)
+    $label.TextAlign = "MiddleLeft"
+    $Control.Width = 420
+    $Control.Height = 28
+    $Control.Margin = New-Object System.Windows.Forms.Padding(4, 8, 8, 4)
+    $Parent.Controls.Add($label)
+    $Parent.Controls.Add($Control)
+}
+
+$overviewTab = New-Tab "Overview"
+$configTab = New-Tab "Config"
+$schedulerTab = New-Tab "Scheduler"
+$logsTab = New-Tab "Logs"
+
+$overviewFlow = New-Object System.Windows.Forms.FlowLayoutPanel
+$overviewFlow.Dock = "Fill"
+$overviewFlow.Padding = New-Object System.Windows.Forms.Padding(20)
+$overviewFlow.AutoScroll = $true
+$overviewTab.Controls.Add($overviewFlow)
+
+$bootstrapButton = New-Button "Bootstrap Node + Dependencies"
+$installNodeButton = New-Button "Download Node.js"
+$installDepsButton = New-Button "Install npm Dependencies"
+$startButton = New-Button "Start Agent"
+$stopButton = New-Button "Stop Agent"
+$restartButton = New-Button "Restart Agent"
+$refreshButton = New-Button "Refresh Status"
+$overviewFlow.Controls.AddRange(@(
+    $bootstrapButton,
+    $installNodeButton,
+    $installDepsButton,
+    $startButton,
+    $stopButton,
+    $restartButton,
+    $refreshButton
+))
+
+$note = New-Object System.Windows.Forms.TextBox
+$note.Multiline = $true
+$note.ReadOnly = $true
+$note.Width = 880
+$note.Height = 140
+$note.Margin = New-Object System.Windows.Forms.Padding(8, 24, 8, 8)
+$note.BorderStyle = "FixedSingle"
+$note.Text = "Sleep/hibernate note: Windows stops CPU and network execution during true sleep/hibernate. This manager can make the agent start before login as SYSTEM, resume after wake, restart automatically, prevent sleep while running, and request wake timers when Windows and hardware allow it."
+$overviewFlow.Controls.Add($note)
+
+$configFlow = New-Object System.Windows.Forms.FlowLayoutPanel
+$configFlow.Dock = "Fill"
+$configFlow.Padding = New-Object System.Windows.Forms.Padding(20)
+$configFlow.AutoScroll = $true
+$configFlow.FlowDirection = "LeftToRight"
+$configTab.Controls.Add($configFlow)
+
+$serverUriBox = New-Object System.Windows.Forms.TextBox
+$enrollmentBox = New-Object System.Windows.Forms.TextBox
+$deviceNameBox = New-Object System.Windows.Forms.TextBox
+$transportCombo = New-Object System.Windows.Forms.ComboBox
+$transportCombo.DropDownStyle = "DropDownList"
+$transportCombo.Items.AddRange(@("poll", "long-poll", "auto"))
+$pollBox = New-Object System.Windows.Forms.NumericUpDown
+$pollBox.Minimum = 50
+$pollBox.Maximum = 60000
+$pollBox.Increment = 50
+$longPollBox = New-Object System.Windows.Forms.NumericUpDown
+$longPollBox.Minimum = 0
+$longPollBox.Maximum = 25000
+$longPollBox.Increment = 250
+$reloadBox = New-Object System.Windows.Forms.NumericUpDown
+$reloadBox.Minimum = 1000
+$reloadBox.Maximum = 60000
+$reloadBox.Increment = 250
+$wheelBox = New-Object System.Windows.Forms.NumericUpDown
+$wheelBox.Minimum = 0
+$wheelBox.Maximum = 32
+$wheelBox.DecimalPlaces = 2
+$wheelBox.Increment = 0.25
+$logDirBox = New-Object System.Windows.Forms.TextBox
+$transferDirBox = New-Object System.Windows.Forms.TextBox
+
+New-Field $configFlow "Server URI" $serverUriBox
+New-Field $configFlow "Enrollment code" $enrollmentBox
+New-Field $configFlow "Device name" $deviceNameBox
+New-Field $configFlow "Initial transport" $transportCombo
+New-Field $configFlow "Poll interval ms" $pollBox
+New-Field $configFlow "Long poll ms" $longPollBox
+New-Field $configFlow "Config reload ms" $reloadBox
+New-Field $configFlow "Wheel multiplier" $wheelBox
+New-Field $configFlow "Log directory" $logDirBox
+New-Field $configFlow "Transfer root" $transferDirBox
+
+$checkboxFlow = New-Object System.Windows.Forms.FlowLayoutPanel
+$checkboxFlow.Width = 930
+$checkboxFlow.Height = 150
+$checkboxFlow.Margin = New-Object System.Windows.Forms.Padding(8, 16, 8, 8)
+$checkboxFlow.FlowDirection = "LeftToRight"
+$checkboxFlow.WrapContents = $true
+$configFlow.Controls.Add($checkboxFlow)
+
+function New-CheckBox {
+    param([string] $Text)
+    $checkbox = New-Object System.Windows.Forms.CheckBox
+    $checkbox.Text = $Text
+    $checkbox.Width = 220
+    $checkbox.Height = 28
+    $checkbox.Margin = New-Object System.Windows.Forms.Padding(8)
+    return $checkbox
+}
+
+$allowScreenBox = New-CheckBox "Screen capture"
+$allowRemoteBox = New-CheckBox "Remote control"
+$allowKeyboardBox = New-CheckBox "Keyboard input"
+$allowClipboardBox = New-CheckBox "Clipboard paste"
+$allowFileBox = New-CheckBox "File transfer"
+$allowRecordingBox = New-CheckBox "Session recording"
+$allowPowerBox = New-CheckBox "Power/display control"
+$allowWebRtcBox = New-CheckBox "WebRTC data channel"
+$preventSleepBox = New-CheckBox "Prevent sleep"
+$checkboxFlow.Controls.AddRange(@(
+    $allowScreenBox,
+    $allowRemoteBox,
+    $allowKeyboardBox,
+    $allowClipboardBox,
+    $allowFileBox,
+    $allowRecordingBox,
+    $allowPowerBox,
+    $allowWebRtcBox,
+    $preventSleepBox
+))
+
+$saveButton = New-Button "Save Config"
+$saveRestartButton = New-Button "Save + Restart"
+$configFlow.Controls.AddRange(@($saveButton, $saveRestartButton))
+
+$schedulerFlow = New-Object System.Windows.Forms.FlowLayoutPanel
+$schedulerFlow.Dock = "Fill"
+$schedulerFlow.Padding = New-Object System.Windows.Forms.Padding(20)
+$schedulerFlow.AutoScroll = $true
+$schedulerTab.Controls.Add($schedulerFlow)
+
+$taskNameBox = New-Object System.Windows.Forms.TextBox
+$taskNameBox.Text = $TaskName
+$nodePathBox = New-Object System.Windows.Forms.TextBox
+$wakeBox = New-Object System.Windows.Forms.CheckBox
+$wakeBox.Text = "Wake to run if Windows/hardware permits"
+$wakeBox.Width = 420
+$wakeBox.Height = 30
+$wakeBox.Margin = New-Object System.Windows.Forms.Padding(8)
+New-Field $schedulerFlow "Task name" $taskNameBox
+New-Field $schedulerFlow "Node path" $nodePathBox
+$schedulerFlow.Controls.Add($wakeBox)
+
+$installTaskButton = New-Button "Install Auto Start"
+$startTaskButton = New-Button "Start Task"
+$stopTaskButton = New-Button "Stop Task"
+$uninstallTaskButton = New-Button "Uninstall Task"
+$elevateButton = New-Button "Relaunch as Admin"
+$schedulerFlow.Controls.AddRange(@(
+    $installTaskButton,
+    $startTaskButton,
+    $stopTaskButton,
+    $uninstallTaskButton,
+    $elevateButton
+))
+
+$logsLayout = New-Object System.Windows.Forms.TableLayoutPanel
+$logsLayout.Dock = "Fill"
+$logsLayout.RowCount = 2
+$logsLayout.ColumnCount = 1
+$logsLayout.Padding = New-Object System.Windows.Forms.Padding(20)
+$logsLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 52))) | Out-Null
+$logsLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
+$logsTab.Controls.Add($logsLayout)
+
+$logTop = New-Object System.Windows.Forms.FlowLayoutPanel
+$logTop.Dock = "Fill"
+$logsLayout.Controls.Add($logTop, 0, 0)
+$logCombo = New-Object System.Windows.Forms.ComboBox
+$logCombo.DropDownStyle = "DropDownList"
+$logCombo.Width = 260
+$logCombo.Items.AddRange(@(
+    "agent-native.log",
+    "agent-native.err.log",
+    "agent-service.log",
+    "agent-service.err.log",
+    "supervisor.log",
+    "npm-install.log",
+    "npm-install.err.log"
+))
+$logCombo.SelectedIndex = 0
+$refreshLogButton = New-Button "Refresh Log"
+$logTop.Controls.AddRange(@($logCombo, $refreshLogButton))
+
+$logBox = New-Object System.Windows.Forms.TextBox
+$logBox.Dock = "Fill"
+$logBox.Multiline = $true
+$logBox.ScrollBars = "Both"
+$logBox.ReadOnly = $true
+$logBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+$logsLayout.Controls.Add($logBox, 0, 1)
+
+$footer = New-Object System.Windows.Forms.Label
+$footer.Dock = "Fill"
+$footer.ForeColor = [System.Drawing.Color]::FromArgb(92, 103, 120)
+$footer.TextAlign = "MiddleLeft"
+$root.Controls.Add($footer, 0, 2)
+
+function Refresh-Log {
+    $logBox.Text = Get-LogTail -FileName ([string] $logCombo.SelectedItem)
+}
+
+function Refresh-Status {
+    $node = Get-NodePath
+    $config = Get-AgentConfig
+    $processes = @(Get-AgentProcesses)
+    $task = Get-TaskStatus
+
+    $nodeStatus.Text = if ($node) { "Node: " + (Split-Path -Leaf (Split-Path -Parent $node)) } else { "Node: missing" }
+    $agentStatus.Text = if ($processes.Count) { "Agent: running (" + (($processes | ForEach-Object { $_.ProcessId }) -join ", ") + ")" } else { "Agent: stopped" }
+    $taskStatus.Text = if ($task.Installed) { "Task: $($task.State) as $($task.UserId)" } else { "Task: not installed" }
+    $nodePathBox.Text = if ($node) { $node } else { "" }
+    $footer.Text = "Agent root: $AgentRoot"
+
+    $serverUriBox.Text = [string] $config.serverUri
+    $enrollmentBox.Text = [string] $config.enrollmentCode
+    $deviceNameBox.Text = [string] $config.deviceName
+    $transportCombo.SelectedItem = if ($config.initialTransportMode) { [string] $config.initialTransportMode } else { "poll" }
+    $pollBox.Value = [decimal] [Math]::Max($pollBox.Minimum, [Math]::Min($pollBox.Maximum, [decimal] $config.pollIntervalMs))
+    $longPollBox.Value = [decimal] [Math]::Max($longPollBox.Minimum, [Math]::Min($longPollBox.Maximum, [decimal] $config.longPollMs))
+    $reloadBox.Value = [decimal] [Math]::Max($reloadBox.Minimum, [Math]::Min($reloadBox.Maximum, [decimal] $config.configReloadMs))
+    $wheelBox.Value = [decimal] [Math]::Max($wheelBox.Minimum, [Math]::Min($wheelBox.Maximum, [decimal] $config.wheelScrollMultiplier))
+    $logDirBox.Text = [string] $config.logDirectory
+    $transferDirBox.Text = [string] $config.fileTransferRoot
+    $allowScreenBox.Checked = [bool] $config.allowScreenCapture
+    $allowRemoteBox.Checked = [bool] $config.allowRemoteControl
+    $allowKeyboardBox.Checked = [bool] $config.allowKeyboardInput
+    $allowClipboardBox.Checked = [bool] $config.allowClipboardPaste
+    $allowFileBox.Checked = [bool] $config.allowFileTransfer
+    $allowRecordingBox.Checked = [bool] $config.allowSessionRecording
+    $allowPowerBox.Checked = [bool] $config.allowPowerControl
+    $allowWebRtcBox.Checked = [bool] $config.allowWebRtcTransport
+    $preventSleepBox.Checked = [bool] $config.preventSleepWhileRunning
+    $wakeBox.Checked = [bool] $task.WakeToRun
+    Refresh-Log
+}
+
+function Save-ConfigFromForm {
+    $config = if (Test-Path -LiteralPath $ConfigPath) {
+        Get-JsonFile -Path $ConfigPath -Fallback (Get-AgentConfig)
+    } else {
+        Get-AgentConfig
+    }
+    Set-JsonProperty $config "serverUri" $serverUriBox.Text.Trim()
+    Set-JsonProperty $config "enrollmentCode" $enrollmentBox.Text.Trim()
+    Set-JsonProperty $config "deviceName" $deviceNameBox.Text.Trim()
+    Set-JsonProperty $config "initialTransportMode" ([string] $transportCombo.SelectedItem)
+    Set-JsonProperty $config "pollIntervalMs" ([int] $pollBox.Value)
+    Set-JsonProperty $config "longPollMs" ([int] $longPollBox.Value)
+    Set-JsonProperty $config "configReloadMs" ([int] $reloadBox.Value)
+    Set-JsonProperty $config "wheelScrollMultiplier" ([double] $wheelBox.Value)
+    Set-JsonProperty $config "logDirectory" $logDirBox.Text.Trim()
+    Set-JsonProperty $config "fileTransferRoot" $transferDirBox.Text.Trim()
+    Set-JsonProperty $config "allowScreenCapture" ([bool] $allowScreenBox.Checked)
+    Set-JsonProperty $config "allowRemoteControl" ([bool] $allowRemoteBox.Checked)
+    Set-JsonProperty $config "allowKeyboardInput" ([bool] $allowKeyboardBox.Checked)
+    Set-JsonProperty $config "allowClipboardPaste" ([bool] $allowClipboardBox.Checked)
+    Set-JsonProperty $config "allowFileTransfer" ([bool] $allowFileBox.Checked)
+    Set-JsonProperty $config "allowSessionRecording" ([bool] $allowRecordingBox.Checked)
+    Set-JsonProperty $config "allowPowerControl" ([bool] $allowPowerBox.Checked)
+    Set-JsonProperty $config "allowWebRtcTransport" ([bool] $allowWebRtcBox.Checked)
+    Set-JsonProperty $config "preventSleepWhileRunning" ([bool] $preventSleepBox.Checked)
+    if ($config.PSObject.Properties.Name -contains "serverUrl") {
+        $config.PSObject.Properties.Remove("serverUrl")
+    }
+    Save-JsonFile -Path $ConfigPath -Value $config
+}
+
+function Run-Action {
+    param([string] $Name, [scriptblock] $Action)
+    try {
+        $form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+        $footer.Text = "$Name..."
+        $form.Refresh()
+        & $Action
+        Refresh-Status
+        [System.Windows.Forms.MessageBox]::Show("$Name selesai.", "Device Snapshot Agent Manager", "OK", "Information") | Out-Null
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "Device Snapshot Agent Manager", "OK", "Error") | Out-Null
+    } finally {
+        $form.Cursor = [System.Windows.Forms.Cursors]::Default
+    }
+}
+
+$bootstrapButton.Add_Click({
+    Run-Action "Bootstrap Node + dependencies" {
+        $node = Get-NodePath
+        if (-not $node) {
+            $node = Install-PortableNode
+        }
+        Install-AgentDependencies -NodePath $node
+    }
+})
+
+$installNodeButton.Add_Click({
+    Run-Action "Download Node.js" {
+        Install-PortableNode | Out-Null
+    }
+})
+
+$installDepsButton.Add_Click({
+    Run-Action "Install npm dependencies" {
+        Install-AgentDependencies -NodePath (Get-NodePath)
+    }
+})
+
+$startButton.Add_Click({
+    Run-Action "Start agent" {
+        $node = Get-NodePath
+        if (-not $node) {
+            $choice = [System.Windows.Forms.MessageBox]::Show("Node.js belum ada. Download Node LTS portable sekarang?", "Node.js missing", "YesNo", "Question")
+            if ($choice -eq "Yes") {
+                $node = Install-PortableNode
+                Install-AgentDependencies -NodePath $node
+            } else {
+                throw "Node.js is required to start the agent."
+            }
+        }
+        Start-AgentProcess -NodePath $node | Out-Null
+    }
+})
+
+$stopButton.Add_Click({ Run-Action "Stop agent" { Stop-AgentProcess | Out-Null } })
+$restartButton.Add_Click({
+    Run-Action "Restart agent" {
+        Stop-AgentProcess | Out-Null
+        Start-Sleep -Milliseconds 600
+        Start-AgentProcess -NodePath (Get-NodePath) | Out-Null
+    }
+})
+$refreshButton.Add_Click({ Refresh-Status })
+
+$saveButton.Add_Click({
+    Run-Action "Save config" {
+        Save-ConfigFromForm
+    }
+})
+
+$saveRestartButton.Add_Click({
+    Run-Action "Save config and restart agent" {
+        Save-ConfigFromForm
+        Stop-AgentProcess | Out-Null
+        Start-Sleep -Milliseconds 600
+        Start-AgentProcess -NodePath (Get-NodePath) | Out-Null
+    }
+})
+
+$installTaskButton.Add_Click({
+    Run-Action "Install auto-start task" {
+        $script:TaskName = $taskNameBox.Text.Trim()
+        $node = if ($nodePathBox.Text.Trim()) { $nodePathBox.Text.Trim() } else { Get-NodePath }
+        if (-not $node) {
+            $node = Install-PortableNode
+            Install-AgentDependencies -NodePath $node
+        }
+        Install-AgentTask -NodePath $node -WakeToRun ([bool] $wakeBox.Checked)
+    }
+})
+
+$startTaskButton.Add_Click({ Run-Action "Start task" { $script:TaskName = $taskNameBox.Text.Trim(); Invoke-TaskAction "start" } })
+$stopTaskButton.Add_Click({ Run-Action "Stop task" { $script:TaskName = $taskNameBox.Text.Trim(); Invoke-TaskAction "stop" } })
+$uninstallTaskButton.Add_Click({ Run-Action "Uninstall task" { $script:TaskName = $taskNameBox.Text.Trim(); Invoke-TaskAction "uninstall" } })
+
+$elevateButton.Add_Click({
+    $args = "-NoProfile -ExecutionPolicy Bypass -STA -File `"$PSCommandPath`" -AgentRoot `"$AgentRoot`" -TaskName `"$($taskNameBox.Text.Trim())`""
+    Start-Process -FilePath "powershell.exe" -Verb RunAs -ArgumentList $args
+})
+
+$refreshLogButton.Add_Click({ Refresh-Log })
+$logCombo.Add_SelectedIndexChanged({ Refresh-Log })
+
+Refresh-Status
+[System.Windows.Forms.Application]::Run($form)
