@@ -1273,9 +1273,15 @@ async function devicePower(config, payload) {
     throw new Error("Power/display control is disabled in agent.config.json.");
   }
   const operation = String(payload?.operation || "").toLowerCase();
-  if (operation === "display_off") {
+  if (operation === "quiet_awake") {
+    quietAwakeActive = true;
+    syncKeepAwake(config);
+    await setDisplayPower("off");
+  } else if (operation === "display_off") {
     await setDisplayPower("off");
   } else if (operation === "display_on") {
+    quietAwakeActive = false;
+    syncKeepAwake(config);
     await setDisplayPower("on");
   } else if (operation === "restart_device") {
     return {
@@ -1296,6 +1302,7 @@ async function devicePower(config, payload) {
   return {
     operation,
     platform: process.platform,
+    quietAwakeActive,
     appliedAt: new Date().toISOString(),
   };
 }
@@ -1754,9 +1761,10 @@ async function startWebRtcLoop(config, state) {
 }
 
 let keepAwakeChild = null;
+let quietAwakeActive = false;
 
-function startKeepAwake(config) {
-  if (!config.preventSleepWhileRunning || process.platform !== "win32" || keepAwakeChild) {
+function startKeepAwake(reason = "requested") {
+  if (process.platform !== "win32" || keepAwakeChild) {
     return;
   }
   const script = `
@@ -1782,7 +1790,7 @@ while ($true) {
     keepAwakeChild = null;
   });
   keepAwakeChild.unref();
-  console.log("[agent] preventSleepWhileRunning active");
+  console.log(`[agent] keep-awake active: ${reason}`);
 }
 
 function stopKeepAwake(reason = "disabled") {
@@ -1797,8 +1805,8 @@ function stopKeepAwake(reason = "disabled") {
 }
 
 function syncKeepAwake(config) {
-  if (config.preventSleepWhileRunning) {
-    startKeepAwake(config);
+  if (config.preventSleepWhileRunning || quietAwakeActive) {
+    startKeepAwake(quietAwakeActive ? "quiet_awake" : "config");
   } else {
     stopKeepAwake("config disabled");
   }

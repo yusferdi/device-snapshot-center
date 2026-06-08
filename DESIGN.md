@@ -63,6 +63,7 @@ Device Snapshot Center should feel like a compact remote-operations console: cal
 - PHP session locks are released immediately after live authentication so frame delivery and input requests can run concurrently.
 - Polling cadence follows live activity and Eco/Flow/Burst profiles, while idle devices back off to reduce database and network load.
 - Identical live frames are hash-deduplicated before upload; freshness uses the latest capture observation rather than only the latest artifact.
+- Live frame capture can be paused independently from agent status, leaving the last frame visible while preventing new capture commands and artifact uploads.
 - The agent screen pipeline is single-flight, and queued live captures are compacted to the newest request before they can create stale-frame backlog.
 - Artifact transfers have explicit deadlines, and command completion is retried idempotently to prevent a transient network failure from leaving the screen pipeline stuck.
 - Idle long-poll probes avoid database transactions; transport preference is rechecked on a bounded cadence instead of on every probe.
@@ -81,6 +82,7 @@ Device Snapshot Center should feel like a compact remote-operations console: cal
 - WebRTC input must preserve the same pointer sequence and epoch contract as HTTP fallback.
 - A future WebRTC media lane can add realtime frames, but the current data channel must remain independently useful for low-latency mouse/keyboard control.
 - Power controls must remain explicit allowlist actions and require agent-side opt-in; never add arbitrary shell execution.
+- Quiet awake is an explicit power action: display off plus temporary keep-awake. It must be visible in UI/audit and must stop when display-on is requested unless config-level prevent-sleep is enabled.
 - High-frequency pointer move commands are ephemeral and must not flood audit history or persist after successful execution.
 
 ## Agent Manager System

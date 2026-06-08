@@ -36,6 +36,7 @@
   const deviceSelect = root.querySelector("[data-live-device]");
   const transportSelect = root.querySelector("[data-live-transport-select]");
   const liveToggle = root.querySelector("[data-live-toggle]");
+  const frameToggle = root.querySelector("[data-frame-toggle]");
   const controlToggle = root.querySelector("[data-control-toggle]");
   const keyboardToggle = root.querySelector("[data-keyboard-toggle]");
   const refreshButton = root.querySelector("[data-live-refresh]");
@@ -76,6 +77,7 @@
   let statusIntervalMs = speedProfiles.flow.status;
   let pointerBatchMs = speedProfiles.flow.pointer;
   let visibleLiveWanted = false;
+  let frameLoopEnabled = localStorage.getItem("dsc_live_frames") !== "off";
   let pointerBatchTimer = null;
   let pointerKeepaliveTimer = null;
   let pointerEvents = [];
@@ -106,6 +108,14 @@
   const webRtcPending = new Map();
   const remoteKeysDown = new Set();
   const pointerEventsSupported = "PointerEvent" in window;
+
+  if (frameToggle) {
+    frameToggle.checked = frameLoopEnabled;
+  }
+
+  function framesAreEnabled() {
+    return !frameToggle || frameToggle.checked;
+  }
 
   function selectedDeviceId() {
     return Number(deviceSelect?.value || 0);
@@ -601,10 +611,12 @@
 
   function updateSwitchAria() {
     liveToggle?.setAttribute("aria-checked", liveToggle.checked ? "true" : "false");
+    frameToggle?.setAttribute("aria-checked", frameToggle.checked ? "true" : "false");
     controlToggle?.setAttribute("aria-checked", controlToggle.checked ? "true" : "false");
     controlToggle?.setAttribute("aria-disabled", controlToggle.disabled ? "true" : "false");
     keyboardToggle?.setAttribute("aria-checked", keyboardToggle.checked ? "true" : "false");
     keyboardToggle?.setAttribute("aria-disabled", keyboardToggle.disabled ? "true" : "false");
+    root.dataset.frames = framesAreEnabled() ? "on" : "off";
   }
 
   function controlIsReady() {
@@ -789,8 +801,13 @@
     }
   }
 
-  async function requestFrame() {
+  async function requestFrame(options = {}) {
     if (captureInFlight || document.hidden) {
+      return;
+    }
+    if (!options.force && !framesAreEnabled()) {
+      setMode("Frames paused", "paused");
+      setStatus("Frame loop paused");
       return;
     }
 
@@ -824,7 +841,7 @@
 
   async function runCaptureLoop(generation) {
     await requestFrame();
-    if (generation === liveLoopGeneration && liveToggle?.checked && !document.hidden) {
+    if (generation === liveLoopGeneration && liveToggle?.checked && framesAreEnabled() && !document.hidden) {
       captureTimer = window.setTimeout(() => runCaptureLoop(generation), captureIntervalMs);
     }
   }
@@ -862,9 +879,14 @@
     }
 
     visibleLiveWanted = false;
-    setMode("Live", "live");
+    setMode(framesAreEnabled() ? "Live" : "Frames paused", framesAreEnabled() ? "live" : "paused");
+    if (!framesAreEnabled()) {
+      setStatus("Live status aktif, frame paused");
+    }
     const generation = liveLoopGeneration;
-    runCaptureLoop(generation);
+    if (framesAreEnabled()) {
+      runCaptureLoop(generation);
+    }
     runStatusLoop(generation);
   }
 
@@ -901,6 +923,25 @@
     stopLive();
   });
 
+  frameToggle?.addEventListener("change", () => {
+    frameLoopEnabled = frameToggle.checked;
+    localStorage.setItem("dsc_live_frames", frameLoopEnabled ? "on" : "off");
+    updateSwitchAria();
+    if (!frameLoopEnabled) {
+      if (captureTimer) {
+        clearTimeout(captureTimer);
+        captureTimer = null;
+      }
+      setMode("Frames paused", "paused");
+      setStatus("Frame loop paused");
+      return;
+    }
+    setStatus("Frame loop resumed");
+    if (liveToggle?.checked && !document.hidden) {
+      startLive();
+    }
+  });
+
   controlToggle?.addEventListener("change", () => {
     if (!controlToggle.checked) {
       cancelPointerGesture("Kontrol mouse nonaktif");
@@ -924,7 +965,7 @@
   });
 
   refreshButton?.addEventListener("click", () => {
-    requestFrame();
+    requestFrame({ force: true });
     refreshStatus();
   });
 

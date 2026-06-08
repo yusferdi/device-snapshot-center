@@ -288,6 +288,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['form'] ?? '') === 'device_
         require_existing_device($deviceId);
         $operation = (string) ($_POST['operation'] ?? '');
         $allowedOperations = [
+            'quiet_awake' => 'Quiet awake',
             'display_off' => 'Display off',
             'display_on' => 'Display on',
             'restart_device' => 'Restart device',
@@ -611,6 +612,10 @@ header('X-App-Release: ' . app_release());
                                 <span>Live</span>
                             </label>
                             <label class="switch-row">
+                                <input type="checkbox" role="switch" aria-checked="true" aria-label="Kirim frame live" checked data-frame-toggle>
+                                <span>Frames</span>
+                            </label>
+                            <label class="switch-row">
                                 <input type="checkbox" role="switch" aria-checked="false" aria-label="Kontrol klik layar" data-control-toggle>
                                 <span>Mouse</span>
                             </label>
@@ -842,6 +847,7 @@ header('X-App-Release: ' . app_release());
                         <label>
                             Power action
                             <select name="operation">
+                                <option value="quiet_awake">Quiet awake: display off + keep agent alive</option>
                                 <option value="display_on">Display on</option>
                                 <option value="display_off">Display off</option>
                                 <option value="restart_agent">Restart agent</option>

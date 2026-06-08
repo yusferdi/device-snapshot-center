@@ -119,6 +119,12 @@ if (remoteVersion) {
   if (remoteVersion.features?.zoom_pan !== true) {
     failures.push("remote release does not advertise zoom_pan");
   }
+  if (remoteVersion.features?.quiet_awake !== true) {
+    failures.push("remote release does not advertise quiet_awake");
+  }
+  if (remoteVersion.features?.frame_loop_pause !== true) {
+    failures.push("remote release does not advertise frame_loop_pause");
+  }
   if (remoteVersion.release !== expected.release) {
     console.log(`[verify] remote release label ${remoteVersion.release} differs from auto hash; validating file hashes`);
   }

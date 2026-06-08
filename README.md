@@ -192,13 +192,16 @@ Agent tidak bisa memproses command saat device benar-benar sleep/hibernate karen
 - Permission profile per device: `view`, `control`, `files`, atau `full`.
 - Snapshot layar melalui action `capture_screen`, dengan preview gambar langsung di dashboard.
 - Live screen di dashboard PHP melalui frame berkala dari agent.
+- Toggle `Frames` dapat mematikan loop capture live tanpa memutus status agent; tombol `Capture frame` tetap bisa mengambil satu frame manual.
 - Fullscreen live screen melalui browser Fullscreen API.
 - Mode live speed `Eco`, `Flow`, dan `Burst` untuk mengatur ritme request frame dari dashboard.
 - Profil speed benar-benar berbeda: `Eco` menghemat request, `Flow` seimbang, dan `Burst` mengutamakan frame serta input paling cepat.
 - Capture layar dan session recording berjalan di background agent agar polling mouse/keyboard tidak berhenti selama frame diambil atau di-upload.
 - Endpoint live dan artifact melepaskan PHP session lock setelah autentikasi, sehingga frame, status, mouse, dan keyboard dapat diproses paralel pada PHP-FPM/Apache.
 - Polling agent adaptif: idle melambat, sedangkan sesi Eco/Flow/Burst mempercepat command pickup sesuai profil aktif.
+- Frame live dikirim sebagai artifact command `capture_screen`: agent upload ke `api/upload.php`, database menyimpan metadata di `commands.artifact_path`, dan file berada di `storage/uploads/YYYY-MM/...`.
 - Frame live identik dideteksi melalui SHA-256 dan tidak di-upload ulang; freshness tetap mengikuti capture terbaru.
+- Frame live lama dipangkas otomatis sesuai `APP_LIVE_FRAME_RETENTION`, default hanya 12 frame terbaru per device agar storage dan database tidak penuh.
 - Capture layar memakai single-flight pipeline di agent; frame live yang menumpuk dikompaksi agar screenshot/upload tidak berjalan paralel tanpa batas.
 - Upload/download artifact memiliki deadline, sedangkan completion command mencoba ulang secara idempotent saat jaringan terganggu.
 - Metode koneksi dapat dipilih per-device dari dashboard: `Polling`, `Long poll`, atau `Auto`, tanpa restart agent. Agent mulai dengan `Polling`.
@@ -212,6 +215,7 @@ Agent tidak bisa memproses command saat device benar-benar sleep/hibernate karen
 - Input keyboard jarak jauh melalui action `keyboard_input`, hanya jika `allowRemoteControl` dan `allowKeyboardInput` aktif di config agent.
 - Copy/paste clipboard dari dashboard ke agent melalui action `clipboard_write`; agent menulis clipboard OS, lalu opsional langsung menjalankan paste ke window aktif.
 - Power controls melalui action `device_power` dan `agent_restart`, hanya jika `allowPowerControl` aktif di config agent.
+- Quiet awake tersedia sebagai power action: display dimatikan, agent tetap keep-awake, dan mode ini dilepas saat `Display on` dikirim.
 - Agent `1.6+` memakai keyboard state `down/up`, mendukung tahan tombol, key repeat OS, Backspace, Delete, arrow, F1-F24, modifier, numpad, dan media key.
 - Koordinat pointer memakai ukuran layar kontrol agent, sehingga tetap presisi saat ukuran screenshot dan DPI Windows berbeda.
 - File transfer dua arah melalui folder `fileTransferRoot`, hanya jika `allowFileTransfer` aktif.
@@ -236,7 +240,7 @@ Agent tidak bisa memproses command saat device benar-benar sleep/hibernate karen
 - `keyboard_input`: input keyboard dari live view. Payload mendukung `kind=text` untuk karakter biasa atau `kind=key` untuk tombol seperti `enter`, `backspace`, `left`, `right`, dan modifier `control`, `alt`, `shift`.
 - `keyboard_state`: event keyboard ephemeral `down/up` untuk pengalaman input stateful agent `1.6+`.
 - `clipboard_write`: tulis text ke clipboard agent dan opsional paste ke window aktif. Payload mendukung `text` dan `paste`.
-- `device_power`: kontrol power/display terbatas. Payload mendukung `operation=display_on`, `display_off`, `restart_device`, `sleep`, atau `hibernate`.
+- `device_power`: kontrol power/display terbatas. Payload mendukung `operation=quiet_awake`, `display_on`, `display_off`, `restart_device`, `sleep`, atau `hibernate`.
 - `agent_restart`: minta agent keluar setelah completion; supervisor/scheduled task akan menghidupkannya lagi jika dipasang.
 - `file_list`: daftar isi folder transfer agent.
 - `file_pull`: ambil file dari folder transfer agent sebagai artifact dashboard.
@@ -272,6 +276,7 @@ Dashboard menyimpan `transport_mode` per device dan metode efektif terakhir. `Po
 - `APP_AGENT_LONG_POLL_MS=15000`: durasi tunggu request agent; isi `0` untuk memaksa short-poll.
 - `APP_LIVE_CAPTURE_INTERVAL_MS=1000`: interval default request frame live; mode Burst menurunkannya otomatis.
 - `APP_LIVE_STATUS_INTERVAL_MS=650`: interval default refresh status live.
+- `APP_LIVE_FRAME_RETENTION=12`: jumlah frame screenshot live terbaru yang disimpan per device.
 - `APP_AGENT_POLL_PROBE_MS=60`: ritme server memeriksa command selama long-poll.
 - `APP_AGENT_MODE_RECHECK_MS=1000`: interval pemeriksaan perubahan metode koneksi saat long-poll.
 - `APP_AGENT_LONG_POLL_ALLOW_CLI_SERVER=false`: melindungi PHP built-in server yang single-worker agar dashboard lokal tidak tertahan.
