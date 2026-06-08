@@ -33,6 +33,7 @@ json_response([
         'focus_toolbar_compact' => true,
         'low_latency_http_tuning' => true,
         'drag_drop_upload' => true,
+        'neumorphic_ui' => true,
     ],
     'files' => $files,
     'generated_at' => gmdate('c'),

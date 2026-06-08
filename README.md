@@ -112,6 +112,7 @@ Agent menyimpan token di `agent/agent.state.json`, lalu memulai HTTP polling dan
 - Login admin dengan password dari `.env`.
 - Device enroll otomatis saat agent berjalan.
 - Dashboard PHP menampilkan address book, device profile, antrean tugas, riwayat hasil, artifact, dan audit event.
+- Dashboard memakai visual system neumorphism: panel soft-raised, input inset, custom switch/dropdown/dropzone, dan state kontrol yang konsisten di PHP.
 - API PHP untuk enroll, polling, upload artifact, dan mark complete.
 - Agent hanya menjalankan action allowlist.
 - Permission profile per device: `view`, `control`, `files`, atau `full`.

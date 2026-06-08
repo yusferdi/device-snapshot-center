@@ -3,12 +3,14 @@ name: Device Snapshot Center
 version: 1.1
 tokens:
   color:
-    canvas: "#f6f7f9"
-    surface: "#ffffff"
-    border: "#e1e5ea"
-    text: "#18212c"
-    muted: "#667180"
-    live: "#0f6b78"
+    canvas: "#e8edf3"
+    surface: "#edf1f6"
+    raised: "#f2f5f8"
+    pressed: "#e2e8ef"
+    border: "#cdd6e1"
+    text: "#1e2938"
+    muted: "#5f6f82"
+    live: "#006666"
     attention: "#a66a13"
     optional: "#59469b"
     danger: "#b42318"
@@ -20,7 +22,8 @@ tokens:
     standard: 14px
     section: 18px
   shadow:
-    panel: "0 1px 2px rgb(24 33 44 / 5%)"
+    panel: "9px 9px 20px rgb(163 174 188 / 42%), -9px -9px 20px rgb(255 255 255 / 88%)"
+    inset: "inset 5px 5px 10px rgb(163 174 188 / 34%), inset -5px -5px 10px rgb(255 255 255 / 84%)"
   breakpoint:
     mobile: 680px
     tablet: 820px
@@ -35,6 +38,7 @@ Device Snapshot Center should feel like a compact remote-operations console: cal
 ## Visual System
 
 - Use a balanced triadic palette: teal for primary/live, amber for attention, violet for optional modes, red only for remote-control danger states.
+- Use neumorphic surface language for the PHP dashboard: raised panels/buttons, inset inputs/dropzones, and pressed active states on the same soft grey canvas.
 - Avoid native-looking controls. Keep semantic HTML, then style switches, selects, segmented controls, and buttons with custom CSS.
 - Use dense but readable dashboard spacing. Cards are only for real panels and repeated records.
 - Prefer one framed work surface with internal dividers over many nested cards.
