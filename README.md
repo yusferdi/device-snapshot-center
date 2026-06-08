@@ -86,6 +86,7 @@ Copy-Item agent\agent.config.example.json agent\agent.config.json
 - `serverUri`: `https://lppsp.ui.ac.id/any/server` (`serverUrl` masih diterima sebagai alias lama)
 - `initialTransportMode`: metode awal agent, default `poll`; dashboard dapat menggantinya tanpa restart.
 - `heartbeatLogMs`: interval heartbeat log saat agent idle, default `30000`.
+- `configReloadMs`: interval agent membaca ulang `agent.config.json`; default `2000`.
 - `enrollmentCode`: samakan dengan `APP_ENROLLMENT_CODE` di `.env`
 - `wheelScrollMultiplier`: tuning scroll khusus device agent, default `16`; turunkan bila wheel terlalu agresif.
 - `deviceName`: nama yang muncul di dashboard
@@ -112,19 +113,53 @@ node agent.js
 
 Agent menyimpan token di `agent/agent.state.json`, lalu memulai HTTP polling dan mengikuti pilihan metode dari dashboard. Jika token ditolak setelah deployment atau pemulihan database, agent otomatis melakukan enrollment ulang. Jika request panjang diblokir proxy, circuit breaker otomatis turun ke short-poll tanpa restart agent.
 
+Agent `1.10+` membaca ulang config lokal secara berkala. Perubahan seperti interval, permission, WebRTC, wheel multiplier, folder transfer/log, dan `preventSleepWhileRunning` bisa aktif saat proses masih berjalan. Jika `serverUri` atau `enrollmentCode` berubah, agent akan mencoba re-enroll ke server baru; untuk perpindahan production yang rapi, gunakan tombol `Save + Restart` di Agent Manager.
+
+## Agent Manager GUI
+
+Agent punya GUI lokal berbasis Node.js untuk mengubah config dan mengontrol proses tanpa membuka file JSON manual:
+
+```powershell
+cd agent
+npm.cmd run manager
+```
+
+Secara default GUI terbuka di:
+
+```text
+http://127.0.0.1:8765/
+```
+
+Fitur Agent Manager:
+
+- edit `serverUri`, enrollment code, nama device, interval polling, WebRTC ICE server, scroll multiplier, folder log/transfer, dan capability toggles;
+- `Save` untuk hot-reload config yang didukung;
+- `Save + Restart` untuk restart agent setelah perubahan besar;
+- start, stop, dan restart agent lokal;
+- install/start/stop/uninstall Scheduled Task `DeviceSnapshotAgent`;
+- memilih `NodePath` dan opsi `WakeToRun` jika Windows/hardware mengizinkan wake timer;
+- membaca log `agent-gui`, `agent-service`, dan `supervisor`.
+
+GUI ini hanya bind ke `127.0.0.1`, sehingga panel manager tidak dibuka ke jaringan publik.
+
 Untuk menjalankan agent Windows tanpa logon, buka PowerShell sebagai Administrator di folder `agent/`, lalu jalankan:
 
 ```powershell
 .\install-startup-task.ps1 -NodePath "C:\nvm4w\nodejs\node.exe"
 ```
 
-Installer membuat Scheduled Task `DeviceSnapshotAgent` sebagai `SYSTEM` dan menjalankan `agent-supervisor.ps1`, sehingga agent otomatis start saat boot dan restart jika proses agent keluar. Hapus dengan:
+Installer membuat Scheduled Task `DeviceSnapshotAgent` sebagai `SYSTEM` (`LogonType=ServiceAccount`, `RunLevel=Highest`) dan menjalankan `agent-supervisor.ps1`, sehingga agent otomatis start saat boot sebelum user login Windows dan restart jika proses agent keluar. Hapus dengan:
 
 ```powershell
 .\uninstall-startup-task.ps1
 ```
 
-Agent tidak bisa memproses command saat device benar-benar sleep/hibernate karena CPU dan network berhenti. Yang bisa dilakukan adalah mencegah sleep saat agent berjalan (`preventSleepWhileRunning=true`) atau membuat agent otomatis hidup lagi setelah boot/wake.
+Agent tidak bisa memproses command saat device benar-benar sleep/hibernate karena CPU dan network berhenti. Tidak ada Node.js, Scheduled Task, service, atau GUI biasa yang bisa terus mengeksekusi kode ketika mesin benar-benar asleep/hibernated. Yang bisa dilakukan adalah:
+
+- membuat agent start sebelum Windows logon lewat Scheduled Task `SYSTEM`;
+- membiarkan proses resume setelah wake;
+- mengaktifkan `preventSleepWhileRunning=true` agar Windows tidak masuk sleep saat agent aktif;
+- memasang task dengan `-WakeToRun` atau lewat GUI jika perangkat, BIOS, Windows power policy, dan trigger task mengizinkan wake timer.
 
 ## Fitur Yang Ada
 

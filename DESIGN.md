@@ -83,6 +83,14 @@ Device Snapshot Center should feel like a compact remote-operations console: cal
 - Power controls must remain explicit allowlist actions and require agent-side opt-in; never add arbitrary shell execution.
 - High-frequency pointer move commands are ephemeral and must not flood audit history or persist after successful execution.
 
+## Agent Manager System
+
+- The local Agent Manager is a device-side operations GUI, not a second public dashboard.
+- Bind the manager only to loopback (`127.0.0.1`) unless a future authenticated local-admin mode is designed.
+- Manager actions may edit `agent.config.json`, start/stop/restart the local process, and install/remove the Windows Scheduled Task, but must not expose arbitrary shell command execution.
+- Scheduled Task startup must use `SYSTEM` with `LogonType=ServiceAccount` so the agent can start at boot before Windows logon.
+- Sleep and hibernate must be described honestly: agent code cannot execute while CPU/network are suspended. Supported mitigations are prevent-sleep, resume-after-wake, boot-before-logon, restart supervision, and optional wake timers where hardware and Windows policy permit them.
+
 ## Mobile Rules
 
 - Controls collapse into a single-column dock below 680px.

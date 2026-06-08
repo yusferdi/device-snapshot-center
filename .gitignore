@@ -1,4 +1,5 @@
 agent/agent.config.json
+agent/agent-manager.state.json
 agent/agent.state.json
 agent/node_modules/
 agent/*.log

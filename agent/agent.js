@@ -9,13 +9,14 @@ import robot from "robotjs";
 import screenshotDesktop from "screenshot-desktop";
 
 const execFileAsync = promisify(execFile);
-const AGENT_VERSION = "1.9.0";
+const AGENT_VERSION = "1.10.0";
 const AGENT_BOOT_ID = crypto.randomUUID();
 const AGENT_BOOT_STARTED_AT = Date.now();
 const CONFIG_PATH = path.resolve("agent.config.json");
 const EXAMPLE_CONFIG_PATH = path.resolve("agent.config.example.json");
 const STATE_PATH = path.resolve("agent.state.json");
 const DEFAULT_MAX_CLIPBOARD_TEXT_BYTES = 8192;
+let lastConfigMtimeMs = 0;
 
 const DIAGNOSTIC_COMMANDS = {
   node_version: {
@@ -97,6 +98,7 @@ async function loadConfig() {
     heartbeatLogMs: Math.round(clampNumber(config.heartbeatLogMs, 10000, 300000, 30000)),
     reconnectMinMs,
     reconnectMaxMs: Math.round(clampNumber(config.reconnectMaxMs, reconnectMinMs, 120000, 10000)),
+    configReloadMs: Math.round(clampNumber(config.configReloadMs, 1000, 60000, 2000)),
     logDirectory: path.resolve(String(config.logDirectory || "./logs")),
     fileTransferRoot: path.resolve(String(config.fileTransferRoot || "./transfer")),
     maxUploadBytes: Number(config.maxUploadBytes || 5 * 1024 * 1024),
@@ -132,6 +134,59 @@ async function loadState() {
     await writeJson(STATE_PATH, state);
   }
   return state;
+}
+
+async function rememberConfigMtime() {
+  try {
+    const stat = await fsp.stat(CONFIG_PATH);
+    lastConfigMtimeMs = stat.mtimeMs;
+  } catch {
+    lastConfigMtimeMs = Date.now();
+  }
+}
+
+async function maybeReloadConfig(config, state) {
+  let stat;
+  try {
+    stat = await fsp.stat(CONFIG_PATH);
+  } catch (error) {
+    console.error(`[agent] config reload skipped: ${error.message}`);
+    return;
+  }
+  if (stat.mtimeMs <= lastConfigMtimeMs + 1) {
+    return;
+  }
+
+  const previousServerUrl = config.serverUrl;
+  const previousEnrollmentCode = config.enrollmentCode;
+  const previousAllowWebRtc = config.allowWebRtcTransport;
+  let next;
+  try {
+    next = await loadConfig();
+  } catch (error) {
+    console.error(`[agent] config reload failed: ${error.message}`);
+    lastConfigMtimeMs = stat.mtimeMs;
+    return;
+  }
+
+  const serverChanged = next.serverUrl !== previousServerUrl
+    || next.enrollmentCode !== previousEnrollmentCode;
+  if (serverChanged && activeWebRtcSessionUid) {
+    await closeActiveWebRtc(config, state, "closed", "agent config changed");
+  }
+
+  Object.assign(config, next);
+  lastConfigMtimeMs = stat.mtimeMs;
+  if (serverChanged) {
+    activeTransport = "";
+    preferredTransportMode = config.initialTransportMode === "long-poll" ? "long-poll" : "poll";
+    await enrollIfNeeded(config, state);
+  }
+  if (previousAllowWebRtc && !config.allowWebRtcTransport && activeWebRtcSessionUid) {
+    await closeActiveWebRtc(config, state, "closed", "WebRTC disabled in config");
+  }
+  syncKeepAwake(config);
+  console.log(`[agent] config reloaded${serverChanged ? " and re-enrolled" : ""}`);
 }
 
 async function apiJson(config, endpoint, body, token = null, options = {}) {
@@ -1671,11 +1726,15 @@ async function answerWebRtcSession(config, state, session) {
 }
 
 async function startWebRtcLoop(config, state) {
-  if (!config.allowWebRtcTransport) {
-    return;
-  }
   let delayMs = config.webRtcSignalPollMs;
   while (true) {
+    if (!config.allowWebRtcTransport) {
+      if (activeWebRtcSessionUid) {
+        await closeActiveWebRtc(config, state, "closed", "WebRTC disabled in config");
+      }
+      await sleep(Math.max(1000, config.configReloadMs || config.webRtcSignalPollMs || 1000));
+      continue;
+    }
     try {
       const result = await apiJson(config, "/api/webrtc.php", {
         action: "agent_poll",
@@ -1697,7 +1756,7 @@ async function startWebRtcLoop(config, state) {
 let keepAwakeChild = null;
 
 function startKeepAwake(config) {
-  if (!config.preventSleepWhileRunning || process.platform !== "win32") {
+  if (!config.preventSleepWhileRunning || process.platform !== "win32" || keepAwakeChild) {
     return;
   }
   const script = `
@@ -1719,9 +1778,35 @@ while ($true) {
     ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
     { windowsHide: true, stdio: "ignore" }
   );
+  keepAwakeChild.on("exit", () => {
+    keepAwakeChild = null;
+  });
   keepAwakeChild.unref();
   console.log("[agent] preventSleepWhileRunning active");
 }
+
+function stopKeepAwake(reason = "disabled") {
+  if (!keepAwakeChild) {
+    return;
+  }
+  try {
+    keepAwakeChild.kill();
+  } catch {}
+  keepAwakeChild = null;
+  console.log(`[agent] preventSleepWhileRunning stopped: ${reason}`);
+}
+
+function syncKeepAwake(config) {
+  if (config.preventSleepWhileRunning) {
+    startKeepAwake(config);
+  } else {
+    stopKeepAwake("config disabled");
+  }
+}
+
+process.once("exit", () => {
+  stopKeepAwake("agent exit");
+});
 
 let activeTransport = "";
 let longPollSuspendedUntil = 0;
@@ -1827,11 +1912,12 @@ async function pollOnce(config, state) {
 
 async function main() {
   const config = await loadConfig();
+  await rememberConfigMtime();
   const state = await enrollIfNeeded(config, await loadState());
   preferredTransportMode = config.initialTransportMode === "long-poll" ? "long-poll" : "poll";
   robot.setMouseDelay(0);
   robot.setKeyboardDelay(0);
-  startKeepAwake(config);
+  syncKeepAwake(config);
   startWebRtcLoop(config, state).catch((error) => {
     console.error(`[agent] WebRTC loop stopped: ${error.message}`);
   });
@@ -1844,6 +1930,7 @@ async function main() {
   let reconnectDelayMs = config.reconnectMinMs;
   while (true) {
     try {
+      await maybeReloadConfig(config, state);
       const nextPollMs = await pollOnce(config, state);
       reconnectDelayMs = config.reconnectMinMs;
       consecutivePollErrors = 0;

@@ -1,7 +1,8 @@
 param(
     [string] $TaskName = "DeviceSnapshotAgent",
     [string] $AgentRoot = $PSScriptRoot,
-    [string] $NodePath = "node.exe"
+    [string] $NodePath = "node.exe",
+    [switch] $WakeToRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,14 +17,15 @@ $Action = New-ScheduledTaskAction `
     -Execute $PowerShell `
     -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Supervisor`" -AgentRoot `"$AgentRoot`" -NodePath `"$NodePath`""
 $Trigger = New-ScheduledTaskTrigger -AtStartup
-$Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
+$Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest -LogonType ServiceAccount
 $Settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
-    -ExecutionTimeLimit (New-TimeSpan -Days 365) `
+    -ExecutionTimeLimit (New-TimeSpan -Seconds 0) `
     -RestartCount 999 `
     -RestartInterval (New-TimeSpan -Minutes 1) `
-    -StartWhenAvailable
+    -StartWhenAvailable `
+    -WakeToRun:$WakeToRun.IsPresent
 
 Register-ScheduledTask `
     -TaskName $TaskName `

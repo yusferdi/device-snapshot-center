@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Device Snapshot Agent Manager</title>
+  <link rel="stylesheet" href="/manager.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Local Node.js GUI</p>
+        <h1>Agent Manager</h1>
+      </div>
+      <div class="status-strip" aria-live="polite">
+        <span class="pill" id="agentState">Agent: checking</span>
+        <span class="pill" id="taskState">Task: checking</span>
+      </div>
+    </header>
+
+    <section class="notice">
+      <strong>Sleep/Hibernate reality</strong>
+      <span>Windows tidak menjalankan user code saat benar-benar sleep/hibernate. Panel ini menyiapkan auto-start sebelum logon, resume setelah wake, restart supervisor, dan opsi prevent sleep.</span>
+    </section>
+
+    <section class="grid">
+      <article class="panel span-2">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Runtime</p>
+            <h2>Agent Control</h2>
+          </div>
+          <button class="ghost" id="refreshBtn" type="button">Refresh</button>
+        </div>
+        <div class="metrics">
+          <div>
+            <span>Manager PID</span>
+            <strong id="managerPid">-</strong>
+          </div>
+          <div>
+            <span>Agent PID</span>
+            <strong id="agentPid">-</strong>
+          </div>
+          <div>
+            <span>Server</span>
+            <strong id="serverPreview">-</strong>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary" id="startAgentBtn" type="button">Start Agent</button>
+          <button id="restartAgentBtn" type="button">Restart Agent</button>
+          <button class="danger" id="stopAgentBtn" type="button">Stop Agent</button>
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Boot</p>
+            <h2>Task Scheduler</h2>
+          </div>
+        </div>
+        <label class="field">
+          <span>Task name</span>
+          <input id="taskName" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>Node path</span>
+          <input id="nodePath" autocomplete="off">
+        </label>
+        <label class="switch-row">
+          <input id="wakeToRun" type="checkbox">
+          <span class="switch"></span>
+          <span>Allow wake timer when Windows permits it</span>
+        </label>
+        <div class="actions wrap">
+          <button class="primary" id="installTaskBtn" type="button">Install Auto Start</button>
+          <button id="startTaskBtn" type="button">Start Task</button>
+          <button id="stopTaskBtn" type="button">Stop Task</button>
+          <button class="danger" id="uninstallTaskBtn" type="button">Uninstall</button>
+        </div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">Live Config</p>
+          <h2>Environment & Transport</h2>
+        </div>
+        <div class="actions compact-actions">
+          <button id="saveConfigBtn" type="button">Save</button>
+          <button class="primary" id="saveRestartBtn" type="button">Save + Restart</button>
+        </div>
+      </div>
+
+      <form class="form-grid" id="configForm">
+        <label class="field span-2">
+          <span>Server URI</span>
+          <input id="serverUri" data-config="serverUri" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>Enrollment code</span>
+          <input id="enrollmentCode" data-config="enrollmentCode" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>Device name</span>
+          <input id="deviceName" data-config="deviceName" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>Initial transport</span>
+          <select id="initialTransportMode" data-config="initialTransportMode">
+            <option value="poll">Polling</option>
+            <option value="long-poll">Long poll</option>
+            <option value="auto">Auto</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Poll interval ms</span>
+          <input id="pollIntervalMs" data-config="pollIntervalMs" type="number" min="50" step="10">
+        </label>
+        <label class="field">
+          <span>Long poll ms</span>
+          <input id="longPollMs" data-config="longPollMs" type="number" min="0" step="100">
+        </label>
+        <label class="field">
+          <span>Config reload ms</span>
+          <input id="configReloadMs" data-config="configReloadMs" type="number" min="1000" step="250">
+        </label>
+        <label class="field">
+          <span>WebRTC signal ms</span>
+          <input id="webRtcSignalPollMs" data-config="webRtcSignalPollMs" type="number" min="500" step="100">
+        </label>
+        <label class="field">
+          <span>Wheel multiplier</span>
+          <input id="wheelScrollMultiplier" data-config="wheelScrollMultiplier" type="number" min="0.25" max="32" step="0.25">
+        </label>
+        <label class="field">
+          <span>Request timeout ms</span>
+          <input id="requestTimeoutMs" data-config="requestTimeoutMs" type="number" min="5000" step="1000">
+        </label>
+        <label class="field span-2">
+          <span>Log directory</span>
+          <input id="logDirectory" data-config="logDirectory" autocomplete="off">
+        </label>
+        <label class="field span-2">
+          <span>File transfer root</span>
+          <input id="fileTransferRoot" data-config="fileTransferRoot" autocomplete="off">
+        </label>
+        <label class="field span-2">
+          <span>WebRTC ICE servers JSON</span>
+          <textarea id="webRtcIceServersText" rows="4" spellcheck="false"></textarea>
+        </label>
+      </form>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">Permissions</p>
+          <h2>Agent Capabilities</h2>
+        </div>
+      </div>
+      <div class="switch-grid" id="switchGrid">
+        <label class="switch-row"><input data-config="allowScreenCapture" type="checkbox"><span class="switch"></span><span>Screen capture</span></label>
+        <label class="switch-row"><input data-config="allowRemoteControl" type="checkbox"><span class="switch"></span><span>Remote mouse/control</span></label>
+        <label class="switch-row"><input data-config="allowKeyboardInput" type="checkbox"><span class="switch"></span><span>Keyboard input</span></label>
+        <label class="switch-row"><input data-config="allowClipboardPaste" type="checkbox"><span class="switch"></span><span>Clipboard paste</span></label>
+        <label class="switch-row"><input data-config="allowFileTransfer" type="checkbox"><span class="switch"></span><span>File transfer</span></label>
+        <label class="switch-row"><input data-config="allowSessionRecording" type="checkbox"><span class="switch"></span><span>Session recording</span></label>
+        <label class="switch-row"><input data-config="allowPowerControl" type="checkbox"><span class="switch"></span><span>Power/display control</span></label>
+        <label class="switch-row"><input data-config="allowWebRtcTransport" type="checkbox"><span class="switch"></span><span>WebRTC data channel</span></label>
+        <label class="switch-row strong"><input data-config="preventSleepWhileRunning" type="checkbox"><span class="switch"></span><span>Prevent sleep while running</span></label>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">Diagnostics</p>
+          <h2>Logs</h2>
+        </div>
+        <label class="log-picker">
+          <span>File</span>
+          <select id="logFile">
+            <option value="agent-gui.log">agent-gui.log</option>
+            <option value="agent-gui.err.log">agent-gui.err.log</option>
+            <option value="agent-service.log">agent-service.log</option>
+            <option value="agent-service.err.log">agent-service.err.log</option>
+            <option value="supervisor.log">supervisor.log</option>
+          </select>
+        </label>
+      </div>
+      <pre class="logs" id="logs">Loading logs...</pre>
+    </section>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </main>
+  <script src="/manager.js" type="module"></script>
+</body>
+</html>

@@ -1,10 +1,11 @@
 {
   "name": "safe-device-agent",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "node agent.js"
+    "start": "node agent.js",
+    "manager": "node agent-manager.js"
   },
   "engines": {
     "node": ">=18"
