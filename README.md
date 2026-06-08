@@ -135,11 +135,12 @@ Fitur Native Agent Manager:
 - berjalan sebagai window Windows native, bukan halaman browser;
 - mencari Node.js dari `DEVICE_SNAPSHOT_NODE`, runtime portable lokal, atau `PATH`;
 - tombol `Bootstrap Node + Dependencies` mengunduh Node.js LTS portable dari `nodejs.org`, lalu menjalankan `npm install --omit=dev`;
+- Overview memakai alur 3 langkah: bootstrap runtime, start agent, lalu `Make Permanent Startup (SYSTEM)`;
 - edit `serverUri`, enrollment code, nama device, interval polling, WebRTC toggle, scroll multiplier, folder log/transfer, dan capability toggles;
 - `Save` untuk hot-reload config yang didukung;
 - `Save + Restart` untuk restart agent setelah perubahan besar;
 - start, stop, dan restart agent lokal;
-- install/start/stop/uninstall Scheduled Task `DeviceSnapshotAgent`;
+- install/start/stop/uninstall Scheduled Task `DeviceSnapshotAgent` sebagai startup permanen sebelum Windows logon;
 - memilih `NodePath` dan opsi `WakeToRun` jika Windows/hardware mengizinkan wake timer;
 - membaca log `agent-native`, `agent-service`, `supervisor`, dan `npm-install`.
 

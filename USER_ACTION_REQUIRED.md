@@ -24,4 +24,4 @@ cd agent
 .\Device Snapshot Agent Manager.cmd
 ```
 
-Dari Native Agent Manager, klik `Bootstrap Node + Dependencies` bila Node/dependency belum siap, simpan config production, lalu gunakan `Install Auto Start` untuk membuat Scheduled Task `DeviceSnapshotAgent` sebagai `SYSTEM` agar agent berjalan sejak boot sebelum Windows logon. Untuk install task, buka manager sebagai Administrator atau klik `Relaunch as Admin`.
+Dari Native Agent Manager, klik `Bootstrap Node + Dependencies` bila Node/dependency belum siap, simpan config production, lalu gunakan `Make Permanent Startup (SYSTEM)` atau `Install Permanent Startup (SYSTEM)` untuk membuat Scheduled Task `DeviceSnapshotAgent` sebagai `SYSTEM` agar agent berjalan sejak boot sebelum Windows logon. Untuk install task, buka manager sebagai Administrator atau klik `Relaunch as Admin`.

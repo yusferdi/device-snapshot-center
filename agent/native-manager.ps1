@@ -259,6 +259,28 @@ function Install-AgentTask {
     Invoke-HiddenProcess -FilePath "powershell.exe" -ArgumentList $args -WorkingDirectory $AgentRoot -Wait | Out-Null
 }
 
+function Install-PermanentStartupFromForm {
+    $script:TaskName = $taskNameBox.Text.Trim()
+    if (-not $script:TaskName) {
+        $script:TaskName = "DeviceSnapshotAgent"
+    }
+    $node = if ($nodePathBox.Text.Trim()) { $nodePathBox.Text.Trim() } else { Get-NodePath }
+    if (-not $node) {
+        $node = Install-PortableNode
+        Install-AgentDependencies -NodePath $node
+    }
+    Install-AgentTask -NodePath $node -WakeToRun ([bool] $wakeBox.Checked)
+}
+
+function Open-ServerDashboard {
+    $config = Get-AgentConfig
+    $url = [string] $config.serverUri
+    if (-not $url) {
+        throw "serverUri is empty."
+    }
+    Start-Process $url
+}
+
 function Invoke-TaskAction {
     param([string] $Action)
     if (-not (Test-IsAdmin)) {
@@ -316,12 +338,27 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
+$ColorCanvas = [System.Drawing.Color]::FromArgb(243, 246, 250)
+$ColorSurface = [System.Drawing.Color]::FromArgb(255, 255, 255)
+$ColorSurfaceAlt = [System.Drawing.Color]::FromArgb(249, 251, 253)
+$ColorText = [System.Drawing.Color]::FromArgb(24, 32, 47)
+$ColorMuted = [System.Drawing.Color]::FromArgb(88, 101, 118)
+$ColorBorder = [System.Drawing.Color]::FromArgb(218, 225, 235)
+$ColorBlue = [System.Drawing.Color]::FromArgb(47, 111, 237)
+$ColorTeal = [System.Drawing.Color]::FromArgb(15, 145, 136)
+$ColorAmber = [System.Drawing.Color]::FromArgb(194, 124, 28)
+$ColorRed = [System.Drawing.Color]::FromArgb(201, 66, 66)
+$ColorGreenSoft = [System.Drawing.Color]::FromArgb(229, 247, 242)
+$ColorAmberSoft = [System.Drawing.Color]::FromArgb(255, 246, 229)
+$ColorRedSoft = [System.Drawing.Color]::FromArgb(255, 235, 235)
+$ColorBlueSoft = [System.Drawing.Color]::FromArgb(232, 240, 255)
+
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Device Snapshot Agent Manager"
 $form.StartPosition = "CenterScreen"
-$form.MinimumSize = New-Object System.Drawing.Size(980, 680)
-$form.Size = New-Object System.Drawing.Size(1120, 780)
-$form.BackColor = [System.Drawing.Color]::FromArgb(239, 242, 247)
+$form.MinimumSize = New-Object System.Drawing.Size(1040, 720)
+$form.Size = New-Object System.Drawing.Size(1180, 820)
+$form.BackColor = $ColorCanvas
 $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 
 $root = New-Object System.Windows.Forms.TableLayoutPanel
@@ -329,7 +366,8 @@ $root.Dock = "Fill"
 $root.RowCount = 3
 $root.ColumnCount = 1
 $root.Padding = New-Object System.Windows.Forms.Padding(14)
-$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 88))) | Out-Null
+$root.BackColor = $ColorCanvas
+$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 104))) | Out-Null
 $root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
 $root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 32))) | Out-Null
 $form.Controls.Add($root)
@@ -342,19 +380,20 @@ $header.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Wi
 $header.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 55))) | Out-Null
 $header.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 46))) | Out-Null
 $header.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 32))) | Out-Null
+$header.BackColor = $ColorCanvas
 $root.Controls.Add($header, 0, 0)
 
 $title = New-Object System.Windows.Forms.Label
 $title.Text = "Device Snapshot Agent Manager"
 $title.Dock = "Fill"
-$title.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 18)
-$title.ForeColor = [System.Drawing.Color]::FromArgb(28, 36, 51)
+$title.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 20)
+$title.ForeColor = $ColorText
 $header.Controls.Add($title, 0, 0)
 
 $subtitle = New-Object System.Windows.Forms.Label
-$subtitle.Text = "Native Windows manager for Node agent, startup task, and live config"
+$subtitle.Text = "Runtime bootstrap, live config, permanent unattended startup, and diagnostics"
 $subtitle.Dock = "Fill"
-$subtitle.ForeColor = [System.Drawing.Color]::FromArgb(92, 103, 120)
+$subtitle.ForeColor = $ColorMuted
 $header.Controls.Add($subtitle, 0, 1)
 
 $statusPanel = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -370,13 +409,46 @@ function New-StatusLabel {
     $label = New-Object System.Windows.Forms.Label
     $label.Text = $Text
     $label.AutoSize = $false
-    $label.Width = 210
-    $label.Height = 28
-    $label.Margin = New-Object System.Windows.Forms.Padding(5)
+    $label.Width = 205
+    $label.Height = 40
+    $label.Margin = New-Object System.Windows.Forms.Padding(5, 8, 5, 5)
     $label.TextAlign = "MiddleCenter"
-    $label.BackColor = [System.Drawing.Color]::White
-    $label.ForeColor = [System.Drawing.Color]::FromArgb(62, 72, 88)
+    $label.BackColor = $ColorSurface
+    $label.ForeColor = $ColorMuted
+    $label.BorderStyle = "FixedSingle"
+    $label.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9)
     return $label
+}
+
+function Set-StatusLabel {
+    param(
+        [System.Windows.Forms.Label] $Label,
+        [string] $Text,
+        [string] $Tone = "neutral"
+    )
+    $Label.Text = $Text
+    switch ($Tone) {
+        "good" {
+            $Label.BackColor = $ColorGreenSoft
+            $Label.ForeColor = $ColorTeal
+        }
+        "warn" {
+            $Label.BackColor = $ColorAmberSoft
+            $Label.ForeColor = $ColorAmber
+        }
+        "bad" {
+            $Label.BackColor = $ColorRedSoft
+            $Label.ForeColor = $ColorRed
+        }
+        "info" {
+            $Label.BackColor = $ColorBlueSoft
+            $Label.ForeColor = $ColorBlue
+        }
+        default {
+            $Label.BackColor = $ColorSurface
+            $Label.ForeColor = $ColorMuted
+        }
+    }
 }
 
 $nodeStatus = New-StatusLabel "Node: checking"
@@ -393,18 +465,49 @@ function New-Tab {
     param([string] $Title)
     $tab = New-Object System.Windows.Forms.TabPage
     $tab.Text = $Title
-    $tab.BackColor = [System.Drawing.Color]::FromArgb(239, 242, 247)
+    $tab.BackColor = $ColorCanvas
     $tabs.TabPages.Add($tab) | Out-Null
     return $tab
 }
 
 function New-Button {
-    param([string] $Text)
+    param([string] $Text, [string] $Tone = "default", [int] $Width = 178)
     $button = New-Object System.Windows.Forms.Button
     $button.Text = $Text
-    $button.Width = 178
+    $button.Width = $Width
     $button.Height = 42
     $button.Margin = New-Object System.Windows.Forms.Padding(8)
+    $button.FlatStyle = "Flat"
+    $button.FlatAppearance.BorderSize = 1
+    $button.FlatAppearance.BorderColor = $ColorBorder
+    $button.UseVisualStyleBackColor = $false
+    $button.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9)
+    switch ($Tone) {
+        "primary" {
+            $button.BackColor = $ColorBlue
+            $button.ForeColor = [System.Drawing.Color]::White
+            $button.FlatAppearance.BorderColor = $ColorBlue
+        }
+        "success" {
+            $button.BackColor = $ColorTeal
+            $button.ForeColor = [System.Drawing.Color]::White
+            $button.FlatAppearance.BorderColor = $ColorTeal
+        }
+        "danger" {
+            $button.BackColor = $ColorRed
+            $button.ForeColor = [System.Drawing.Color]::White
+            $button.FlatAppearance.BorderColor = $ColorRed
+        }
+        "warning" {
+            $button.BackColor = $ColorAmber
+            $button.ForeColor = [System.Drawing.Color]::White
+            $button.FlatAppearance.BorderColor = $ColorAmber
+        }
+        default {
+            $button.BackColor = $ColorSurface
+            $button.ForeColor = $ColorText
+        }
+    }
     return $button
 }
 
@@ -416,11 +519,55 @@ function New-Field {
     $label.Height = 28
     $label.Margin = New-Object System.Windows.Forms.Padding(8, 10, 4, 4)
     $label.TextAlign = "MiddleLeft"
+    $label.ForeColor = $ColorMuted
     $Control.Width = 420
     $Control.Height = 28
     $Control.Margin = New-Object System.Windows.Forms.Padding(4, 8, 8, 4)
+    $Control.BackColor = $ColorSurface
+    $Control.ForeColor = $ColorText
     $Parent.Controls.Add($label)
     $Parent.Controls.Add($Control)
+}
+
+function New-Card {
+    param([string] $Title, [string] $Body, [int] $Width = 320, [int] $Height = 150)
+    $card = New-Object System.Windows.Forms.GroupBox
+    $card.Text = $Title
+    $card.Width = $Width
+    $card.Height = $Height
+    $card.Margin = New-Object System.Windows.Forms.Padding(8)
+    $card.Padding = New-Object System.Windows.Forms.Padding(14, 18, 14, 12)
+    $card.BackColor = $ColorSurface
+    $card.ForeColor = $ColorText
+    $card.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9)
+
+    $layout = New-Object System.Windows.Forms.TableLayoutPanel
+    $layout.Dock = "Fill"
+    $layout.RowCount = 2
+    $layout.ColumnCount = 1
+    $layout.BackColor = $ColorSurface
+    $layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
+    $layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 48))) | Out-Null
+
+    $bodyLabel = New-Object System.Windows.Forms.Label
+    $bodyLabel.Text = $Body
+    $bodyLabel.Dock = "Fill"
+    $bodyLabel.ForeColor = $ColorMuted
+    $bodyLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $layout.Controls.Add($bodyLabel, 0, 0)
+    $card.Controls.Add($layout)
+
+    return [pscustomobject]@{
+        Card = $card
+        Layout = $layout
+    }
+}
+
+function Add-CardButton {
+    param([object] $CardInfo, [System.Windows.Forms.Button] $Button)
+    $Button.Dock = "Fill"
+    $Button.Margin = New-Object System.Windows.Forms.Padding(0, 8, 0, 0)
+    $CardInfo.Layout.Controls.Add($Button, 0, 1)
 }
 
 $overviewTab = New-Tab "Overview"
@@ -432,32 +579,72 @@ $overviewFlow = New-Object System.Windows.Forms.FlowLayoutPanel
 $overviewFlow.Dock = "Fill"
 $overviewFlow.Padding = New-Object System.Windows.Forms.Padding(20)
 $overviewFlow.AutoScroll = $true
+$overviewFlow.BackColor = $ColorCanvas
 $overviewTab.Controls.Add($overviewFlow)
 
-$bootstrapButton = New-Button "Bootstrap Node + Dependencies"
-$installNodeButton = New-Button "Download Node.js"
-$installDepsButton = New-Button "Install npm Dependencies"
-$startButton = New-Button "Start Agent"
-$stopButton = New-Button "Stop Agent"
-$restartButton = New-Button "Restart Agent"
-$refreshButton = New-Button "Refresh Status"
-$overviewFlow.Controls.AddRange(@(
-    $bootstrapButton,
+$runtimeCard = New-Card `
+    -Title "1. Runtime" `
+    -Body "Download Node.js portable if needed, then install agent dependencies. This is the first step on a fresh device." `
+    -Width 335 `
+    -Height 160
+$configCard = New-Card `
+    -Title "2. Config & Run" `
+    -Body "Save the production server config, then start or restart the local agent process for this session." `
+    -Width 335 `
+    -Height 160
+$startupCard = New-Card `
+    -Title "3. Permanent Startup" `
+    -Body "Install a SYSTEM Scheduled Task so the agent starts at boot before Windows logon and restarts if it exits." `
+    -Width 360 `
+    -Height 160
+
+$bootstrapButton = New-Button "Bootstrap Node + Dependencies" "primary" 285
+$startButton = New-Button "Start Agent" "success" 285
+$quickPermanentButton = New-Button "Make Permanent Startup (SYSTEM)" "warning" 305
+Add-CardButton $runtimeCard $bootstrapButton
+Add-CardButton $configCard $startButton
+Add-CardButton $startupCard $quickPermanentButton
+$overviewFlow.Controls.AddRange(@($runtimeCard.Card, $configCard.Card, $startupCard.Card))
+
+$quickActionsPanel = New-Object System.Windows.Forms.GroupBox
+$quickActionsPanel.Text = "Daily Controls"
+$quickActionsPanel.Width = 1060
+$quickActionsPanel.Height = 98
+$quickActionsPanel.Margin = New-Object System.Windows.Forms.Padding(8, 16, 8, 8)
+$quickActionsPanel.Padding = New-Object System.Windows.Forms.Padding(12, 18, 12, 12)
+$quickActionsPanel.BackColor = $ColorSurface
+$quickActionsPanel.ForeColor = $ColorText
+
+$quickActionsFlow = New-Object System.Windows.Forms.FlowLayoutPanel
+$quickActionsFlow.Dock = "Fill"
+$quickActionsFlow.BackColor = $ColorSurface
+$quickActionsPanel.Controls.Add($quickActionsFlow)
+
+$installNodeButton = New-Button "Download Node.js" "default" 165
+$installDepsButton = New-Button "Install npm Dependencies" "default" 210
+$stopButton = New-Button "Stop Agent" "danger" 150
+$restartButton = New-Button "Restart Agent" "default" 165
+$refreshButton = New-Button "Refresh Status" "default" 160
+$openDashboardButton = New-Button "Open Server Dashboard" "default" 205
+$quickActionsFlow.Controls.AddRange(@(
     $installNodeButton,
     $installDepsButton,
-    $startButton,
     $stopButton,
     $restartButton,
-    $refreshButton
+    $refreshButton,
+    $openDashboardButton
 ))
+$overviewFlow.Controls.Add($quickActionsPanel)
 
 $note = New-Object System.Windows.Forms.TextBox
 $note.Multiline = $true
 $note.ReadOnly = $true
-$note.Width = 880
-$note.Height = 140
-$note.Margin = New-Object System.Windows.Forms.Padding(8, 24, 8, 8)
+$note.Width = 1060
+$note.Height = 100
+$note.Margin = New-Object System.Windows.Forms.Padding(8, 12, 8, 8)
 $note.BorderStyle = "FixedSingle"
+$note.BackColor = $ColorBlueSoft
+$note.ForeColor = $ColorText
 $note.Text = "Sleep/hibernate note: Windows stops CPU and network execution during true sleep/hibernate. This manager can make the agent start before login as SYSTEM, resume after wake, restart automatically, prevent sleep while running, and request wake timers when Windows and hardware allow it."
 $overviewFlow.Controls.Add($note)
 
@@ -466,6 +653,7 @@ $configFlow.Dock = "Fill"
 $configFlow.Padding = New-Object System.Windows.Forms.Padding(20)
 $configFlow.AutoScroll = $true
 $configFlow.FlowDirection = "LeftToRight"
+$configFlow.BackColor = $ColorCanvas
 $configTab.Controls.Add($configFlow)
 
 $serverUriBox = New-Object System.Windows.Forms.TextBox
@@ -544,15 +732,28 @@ $checkboxFlow.Controls.AddRange(@(
     $preventSleepBox
 ))
 
-$saveButton = New-Button "Save Config"
-$saveRestartButton = New-Button "Save + Restart"
+$saveButton = New-Button "Save Config" "primary"
+$saveRestartButton = New-Button "Save + Restart" "success"
 $configFlow.Controls.AddRange(@($saveButton, $saveRestartButton))
 
 $schedulerFlow = New-Object System.Windows.Forms.FlowLayoutPanel
 $schedulerFlow.Dock = "Fill"
 $schedulerFlow.Padding = New-Object System.Windows.Forms.Padding(20)
 $schedulerFlow.AutoScroll = $true
+$schedulerFlow.BackColor = $ColorCanvas
 $schedulerTab.Controls.Add($schedulerFlow)
+
+$schedulerIntro = New-Object System.Windows.Forms.TextBox
+$schedulerIntro.Multiline = $true
+$schedulerIntro.ReadOnly = $true
+$schedulerIntro.Width = 930
+$schedulerIntro.Height = 92
+$schedulerIntro.Margin = New-Object System.Windows.Forms.Padding(8, 0, 8, 14)
+$schedulerIntro.BorderStyle = "FixedSingle"
+$schedulerIntro.BackColor = $ColorAmberSoft
+$schedulerIntro.ForeColor = $ColorText
+$schedulerIntro.Text = "Permanent startup installs Windows Scheduled Task '$TaskName' as SYSTEM with ServiceAccount logon. It starts at boot before any user signs in, then the supervisor restarts the agent whenever it exits. Run this tab as Administrator."
+$schedulerFlow.Controls.Add($schedulerIntro)
 
 $taskNameBox = New-Object System.Windows.Forms.TextBox
 $taskNameBox.Text = $TaskName
@@ -566,11 +767,11 @@ New-Field $schedulerFlow "Task name" $taskNameBox
 New-Field $schedulerFlow "Node path" $nodePathBox
 $schedulerFlow.Controls.Add($wakeBox)
 
-$installTaskButton = New-Button "Install Auto Start"
-$startTaskButton = New-Button "Start Task"
-$stopTaskButton = New-Button "Stop Task"
-$uninstallTaskButton = New-Button "Uninstall Task"
-$elevateButton = New-Button "Relaunch as Admin"
+$installTaskButton = New-Button "Install Permanent Startup (SYSTEM)" "warning" 275
+$startTaskButton = New-Button "Start Task Now" "success" 165
+$stopTaskButton = New-Button "Stop Task" "default" 150
+$uninstallTaskButton = New-Button "Uninstall Task" "danger" 160
+$elevateButton = New-Button "Relaunch as Admin" "primary" 180
 $schedulerFlow.Controls.AddRange(@(
     $installTaskButton,
     $startTaskButton,
@@ -579,17 +780,30 @@ $schedulerFlow.Controls.AddRange(@(
     $elevateButton
 ))
 
+$taskDetailBox = New-Object System.Windows.Forms.TextBox
+$taskDetailBox.Multiline = $true
+$taskDetailBox.ReadOnly = $true
+$taskDetailBox.Width = 930
+$taskDetailBox.Height = 105
+$taskDetailBox.Margin = New-Object System.Windows.Forms.Padding(8, 12, 8, 8)
+$taskDetailBox.BorderStyle = "FixedSingle"
+$taskDetailBox.BackColor = $ColorSurface
+$taskDetailBox.ForeColor = $ColorMuted
+$schedulerFlow.Controls.Add($taskDetailBox)
+
 $logsLayout = New-Object System.Windows.Forms.TableLayoutPanel
 $logsLayout.Dock = "Fill"
 $logsLayout.RowCount = 2
 $logsLayout.ColumnCount = 1
 $logsLayout.Padding = New-Object System.Windows.Forms.Padding(20)
+$logsLayout.BackColor = $ColorCanvas
 $logsLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 52))) | Out-Null
 $logsLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
 $logsTab.Controls.Add($logsLayout)
 
 $logTop = New-Object System.Windows.Forms.FlowLayoutPanel
 $logTop.Dock = "Fill"
+$logTop.BackColor = $ColorCanvas
 $logsLayout.Controls.Add($logTop, 0, 0)
 $logCombo = New-Object System.Windows.Forms.ComboBox
 $logCombo.DropDownStyle = "DropDownList"
@@ -613,6 +827,8 @@ $logBox.Multiline = $true
 $logBox.ScrollBars = "Both"
 $logBox.ReadOnly = $true
 $logBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+$logBox.BackColor = $ColorSurface
+$logBox.ForeColor = $ColorText
 $logsLayout.Controls.Add($logBox, 0, 1)
 
 $footer = New-Object System.Windows.Forms.Label
@@ -631,11 +847,27 @@ function Refresh-Status {
     $processes = @(Get-AgentProcesses)
     $task = Get-TaskStatus
 
-    $nodeStatus.Text = if ($node) { "Node: " + (Split-Path -Leaf (Split-Path -Parent $node)) } else { "Node: missing" }
-    $agentStatus.Text = if ($processes.Count) { "Agent: running (" + (($processes | ForEach-Object { $_.ProcessId }) -join ", ") + ")" } else { "Agent: stopped" }
-    $taskStatus.Text = if ($task.Installed) { "Task: $($task.State) as $($task.UserId)" } else { "Task: not installed" }
+    $nodeLabel = if ($node) { "Node ready: " + (Split-Path -Leaf (Split-Path -Parent $node)) } else { "Node missing" }
+    $nodeTone = if ($node) { "good" } else { "warn" }
+    $agentLabel = if ($processes.Count) { "Agent running: " + (($processes | ForEach-Object { $_.ProcessId }) -join ", ") } else { "Agent stopped" }
+    $agentTone = if ($processes.Count) { "good" } else { "warn" }
+    $taskLabel = if ($task.Installed) { "Startup task: $($task.State)" } else { "Startup task missing" }
+    $taskTone = if ($task.Installed) { "good" } else { "warn" }
+    $isAdmin = Test-IsAdmin
+    $adminLabel = "Admin: " + ($(if ($isAdmin) { "yes" } else { "no" }))
+    $adminTone = if ($isAdmin) { "info" } else { "warn" }
+    Set-StatusLabel $nodeStatus $nodeLabel $nodeTone
+    Set-StatusLabel $agentStatus $agentLabel $agentTone
+    Set-StatusLabel $taskStatus $taskLabel $taskTone
+    Set-StatusLabel $adminStatus $adminLabel $adminTone
+    $quickPermanentButton.Text = if ($task.Installed) { "Repair Permanent Startup (SYSTEM)" } else { "Make Permanent Startup (SYSTEM)" }
     $nodePathBox.Text = if ($node) { $node } else { "" }
     $footer.Text = "Agent root: $AgentRoot"
+    $taskDetailBox.Text = if ($task.Installed) {
+        "Installed: yes`r`nState: $($task.State)`r`nRuns as: $($task.UserId)`r`nWakeToRun: $($task.WakeToRun)`r`nStartup behavior: starts at boot before Windows logon, then supervisor restarts agent if it exits."
+    } else {
+        "Installed: no`r`nStartup behavior: agent will not start automatically before logon until you install the SYSTEM startup task.`r`nNext step: click Relaunch as Admin, then Install Permanent Startup (SYSTEM)."
+    }
 
     $serverUriBox.Text = [string] $config.serverUri
     $enrollmentBox.Text = [string] $config.enrollmentCode
@@ -729,6 +961,18 @@ $installDepsButton.Add_Click({
     }
 })
 
+$quickPermanentButton.Add_Click({
+    Run-Action "Install permanent startup" {
+        Install-PermanentStartupFromForm
+    }
+})
+
+$openDashboardButton.Add_Click({
+    Run-Action "Open server dashboard" {
+        Open-ServerDashboard
+    }
+})
+
 $startButton.Add_Click({
     Run-Action "Start agent" {
         $node = Get-NodePath
@@ -772,13 +1016,7 @@ $saveRestartButton.Add_Click({
 
 $installTaskButton.Add_Click({
     Run-Action "Install auto-start task" {
-        $script:TaskName = $taskNameBox.Text.Trim()
-        $node = if ($nodePathBox.Text.Trim()) { $nodePathBox.Text.Trim() } else { Get-NodePath }
-        if (-not $node) {
-            $node = Install-PortableNode
-            Install-AgentDependencies -NodePath $node
-        }
-        Install-AgentTask -NodePath $node -WakeToRun ([bool] $wakeBox.Checked)
+        Install-PermanentStartupFromForm
     }
 })
 
