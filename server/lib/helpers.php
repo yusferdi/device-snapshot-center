@@ -69,7 +69,7 @@ function apply_security_headers(): void
         return;
     }
 
-    header("Content-Security-Policy: default-src 'self'; style-src 'self'; img-src 'self' data:; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+    header("Content-Security-Policy: default-src 'self'; connect-src 'self' stun: turn:; style-src 'self'; img-src 'self' data:; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
     header('Referrer-Policy: no-referrer');
     header('X-Content-Type-Options: nosniff');
     header('X-Frame-Options: DENY');
@@ -144,6 +144,7 @@ function app_release_files(): array
         'api/live.php' => $serverRoot . DIRECTORY_SEPARATOR . 'api' . DIRECTORY_SEPARATOR . 'live.php',
         'api/poll.php' => $serverRoot . DIRECTORY_SEPARATOR . 'api' . DIRECTORY_SEPARATOR . 'poll.php',
         'api/upload.php' => $serverRoot . DIRECTORY_SEPARATOR . 'api' . DIRECTORY_SEPARATOR . 'upload.php',
+        'api/webrtc.php' => $serverRoot . DIRECTORY_SEPARATOR . 'api' . DIRECTORY_SEPARATOR . 'webrtc.php',
         'lib/config.php' => __DIR__ . DIRECTORY_SEPARATOR . 'config.php',
         'lib/db.php' => __DIR__ . DIRECTORY_SEPARATOR . 'db.php',
         'lib/helpers.php' => __FILE__,
@@ -268,7 +269,7 @@ function apply_runtime_schema_change(string $sql, callable $isApplied): void
 
 function runtime_schema_version(): int
 {
-    return 3;
+    return 4;
 }
 
 function ensure_runtime_schema(): void
@@ -333,6 +334,29 @@ function ensure_runtime_schema(): void
             static fn (): bool => isset(table_indexes('commands')['idx_commands_device_expiry'])
         );
     }
+
+    db()->exec(
+        "CREATE TABLE IF NOT EXISTS webrtc_sessions (
+           id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+           session_uid VARCHAR(80) NOT NULL,
+           device_id BIGINT UNSIGNED NOT NULL,
+           offer_json LONGTEXT NOT NULL,
+           answer_json LONGTEXT DEFAULT NULL,
+           status ENUM('offered','answered','connected','failed','closed','expired') NOT NULL DEFAULT 'offered',
+           error_text TEXT DEFAULT NULL,
+           expires_at DATETIME NOT NULL,
+           answered_at DATETIME DEFAULT NULL,
+           connected_at DATETIME DEFAULT NULL,
+           created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+           updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+           PRIMARY KEY (id),
+           UNIQUE KEY uq_webrtc_session_uid (session_uid),
+           KEY idx_webrtc_device_status (device_id, status, expires_at),
+           CONSTRAINT fk_webrtc_device
+             FOREIGN KEY (device_id) REFERENCES devices (id)
+             ON DELETE CASCADE
+         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
 
     $stmt = db()->prepare(
         "INSERT INTO app_meta (meta_key, meta_value)
@@ -633,6 +657,7 @@ function transport_modes(): array
     return [
         'poll' => 'Polling',
         'long-poll' => 'Long poll',
+        'webrtc' => 'WebRTC',
         'auto' => 'Auto',
     ];
 }
@@ -705,7 +730,7 @@ function device_action_allowed(array $device, string $action): bool
         'view' => $base,
         'control' => array_merge($base, ['mouse_click', 'mouse_input', 'keyboard_input', 'keyboard_state', 'clipboard_write', 'record_session']),
         'files' => array_merge($base, ['file_list', 'file_pull', 'file_put']),
-        'full' => array_merge($base, ['mouse_click', 'mouse_input', 'keyboard_input', 'keyboard_state', 'clipboard_write', 'file_list', 'file_pull', 'file_put', 'record_session']),
+        'full' => array_merge($base, ['mouse_click', 'mouse_input', 'keyboard_input', 'keyboard_state', 'clipboard_write', 'file_list', 'file_pull', 'file_put', 'record_session', 'device_power', 'agent_restart']),
     ];
 
     return in_array($action, $groups[$profile] ?? $groups['full'], true);

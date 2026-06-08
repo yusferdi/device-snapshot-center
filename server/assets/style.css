@@ -739,6 +739,14 @@ label:has(> select)::after {
   cursor: crosshair;
 }
 
+[data-live-dashboard][data-zoom="manual"] .live-stage img.ready {
+  cursor: grab;
+}
+
+[data-live-dashboard][data-zoom="manual"][data-control="on"] .live-stage img.ready {
+  cursor: crosshair;
+}
+
 .live-stage img.ready {
   display: block;
 }

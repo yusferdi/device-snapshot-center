@@ -19,6 +19,13 @@
   "allowClipboardPaste": true,
   "allowFileTransfer": true,
   "allowSessionRecording": true,
+  "allowPowerControl": false,
+  "allowWebRtcTransport": true,
+  "webRtcSignalPollMs": 1000,
+  "webRtcIceServers": [
+    { "urls": "stun:stun.l.google.com:19302" }
+  ],
+  "preventSleepWhileRunning": false,
   "maxClipboardTextBytes": 8192,
   "wheelScrollMultiplier": 16
 }

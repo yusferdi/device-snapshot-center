@@ -9,7 +9,7 @@ import robot from "robotjs";
 import screenshotDesktop from "screenshot-desktop";
 
 const execFileAsync = promisify(execFile);
-const AGENT_VERSION = "1.8.6";
+const AGENT_VERSION = "1.9.0";
 const AGENT_BOOT_ID = crypto.randomUUID();
 const AGENT_BOOT_STARTED_AT = Date.now();
 const CONFIG_PATH = path.resolve("agent.config.json");
@@ -107,6 +107,13 @@ async function loadConfig() {
     allowClipboardPaste: config.allowClipboardPaste !== false,
     allowFileTransfer: Boolean(config.allowFileTransfer),
     allowSessionRecording: Boolean(config.allowSessionRecording),
+    allowPowerControl: Boolean(config.allowPowerControl),
+    allowWebRtcTransport: config.allowWebRtcTransport !== false,
+    webRtcSignalPollMs: Math.round(clampNumber(config.webRtcSignalPollMs, 500, 10000, 1000)),
+    webRtcIceServers: Array.isArray(config.webRtcIceServers) && config.webRtcIceServers.length
+      ? config.webRtcIceServers
+      : [{ urls: "stun:stun.l.google.com:19302" }],
+    preventSleepWhileRunning: Boolean(config.preventSleepWhileRunning),
     maxClipboardTextBytes: Math.round(clampNumber(
       config.maxClipboardTextBytes,
       256,
@@ -1137,6 +1144,116 @@ async function keyboardState(config, payload) {
   };
 }
 
+async function runPowerShell(script, timeoutMs = 8000, label = "PowerShell") {
+  const result = await execFileAsync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+    { timeout: timeoutMs, windowsHide: true }
+  );
+  return {
+    stdout: String(result.stdout || "").trim(),
+    stderr: String(result.stderr || "").trim(),
+  };
+}
+
+async function setDisplayPower(state) {
+  if (process.platform !== "win32") {
+    throw new Error("Display power control is currently implemented for Windows only.");
+  }
+  const powerState = state === "on" ? -1 : 2;
+  await runPowerShell(`
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class NativeDisplay {
+  [DllImport("user32.dll")]
+  public static extern IntPtr SendMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
+}
+"@
+[NativeDisplay]::SendMessage([IntPtr]0xffff, 0x0112, [IntPtr]0xF170, [IntPtr]${powerState}) | Out-Null
+`, 8000, `display ${state}`);
+  if (state === "on") {
+    const pos = robot.getMousePos();
+    robot.moveMouse(pos.x + 1, pos.y);
+    robot.moveMouse(pos.x, pos.y);
+  }
+}
+
+async function requestDeviceRestart(delaySeconds) {
+  const delay = clampInteger(delaySeconds, 0, 600, 5);
+  if (process.platform === "win32") {
+    await execFileAsync("shutdown.exe", ["/r", "/t", String(delay), "/c", "Device Snapshot Center requested restart"], {
+      timeout: 8000,
+      windowsHide: true,
+    });
+    return { platform: "win32", delaySeconds: delay };
+  }
+  if (process.platform === "darwin") {
+    await execFileAsync("osascript", ["-e", 'tell app "System Events" to restart'], { timeout: 8000 });
+    return { platform: "darwin", delaySeconds: 0 };
+  }
+  await execFileAsync("systemctl", ["reboot"], { timeout: 8000 });
+  return { platform: process.platform, delaySeconds: 0 };
+}
+
+async function requestSleepOrHibernate(operation) {
+  if (process.platform === "win32") {
+    if (operation === "hibernate") {
+      await execFileAsync("shutdown.exe", ["/h"], { timeout: 8000, windowsHide: true });
+      return { platform: "win32", operation };
+    }
+    await runPowerShell("Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)", 8000, "sleep");
+    return { platform: "win32", operation };
+  }
+  if (process.platform === "darwin") {
+    await execFileAsync("pmset", ["sleepnow"], { timeout: 8000 });
+    return { platform: "darwin", operation: "sleep" };
+  }
+  await execFileAsync("systemctl", [operation === "hibernate" ? "hibernate" : "suspend"], { timeout: 8000 });
+  return { platform: process.platform, operation };
+}
+
+async function devicePower(config, payload) {
+  if (!config.allowPowerControl) {
+    throw new Error("Power/display control is disabled in agent.config.json.");
+  }
+  const operation = String(payload?.operation || "").toLowerCase();
+  if (operation === "display_off") {
+    await setDisplayPower("off");
+  } else if (operation === "display_on") {
+    await setDisplayPower("on");
+  } else if (operation === "restart_device") {
+    return {
+      operation,
+      ...(await requestDeviceRestart(payload?.delaySeconds)),
+      requestedAt: new Date().toISOString(),
+    };
+  } else if (operation === "sleep" || operation === "hibernate") {
+    return {
+      operation,
+      ...(await requestSleepOrHibernate(operation)),
+      requestedAt: new Date().toISOString(),
+    };
+  } else {
+    throw new Error(`Unsupported power operation: ${operation}`);
+  }
+
+  return {
+    operation,
+    platform: process.platform,
+    appliedAt: new Date().toISOString(),
+  };
+}
+
+function scheduleAgentRestart(reason = "requested") {
+  console.log(`[agent] restart scheduled: ${reason}`);
+  setTimeout(() => {
+    releaseActiveMouseButtons("agent restart");
+    releaseActiveKeyboardKeys("agent restart");
+    process.exit(0);
+  }, 500);
+}
+
 async function complete(config, state, commandId, payload) {
   let lastError;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -1300,6 +1417,28 @@ async function handleCommand(config, state, command) {
       return;
     }
 
+    case "device_power": {
+      const result = await devicePower(config, payload);
+      await complete(config, state, id, {
+        status: "succeeded",
+        result_json: result,
+      });
+      return;
+    }
+
+    case "agent_restart": {
+      await complete(config, state, id, {
+        status: "succeeded",
+        result_json: {
+          restarted: true,
+          reason: String(payload?.reason || "requested"),
+          scheduledAt: new Date().toISOString(),
+        },
+      });
+      scheduleAgentRestart(payload?.reason || "requested");
+      return;
+    }
+
     case "file_list": {
       const result = await listTransferFiles(config, payload);
       await complete(config, state, id, {
@@ -1371,6 +1510,217 @@ async function executeCommand(config, state, command) {
       error_text: error.stack || error.message,
     });
   }
+}
+
+async function handleDirectControl(config, action, payload) {
+  switch (String(action || "")) {
+    case "ping":
+      return {
+        pong: true,
+        timestamp: new Date().toISOString(),
+      };
+    case "click":
+      return mouseClick(config, payload);
+    case "pointer":
+      return mouseInput(config, payload);
+    case "key":
+      return (payload?.kind || "") === "state"
+        ? keyboardState(config, payload)
+        : keyboardInput(config, payload);
+    default:
+      throw new Error(`Unsupported WebRTC action: ${action}`);
+  }
+}
+
+let activeWebRtcPeer = null;
+let activeWebRtcSessionUid = "";
+
+async function closeActiveWebRtc(config, state, status = "closed", error = "") {
+  if (activeWebRtcPeer) {
+    try {
+      activeWebRtcPeer.close();
+    } catch {}
+  }
+  if (activeWebRtcSessionUid) {
+    try {
+      await apiJson(config, "/api/webrtc.php", {
+        action: "agent_status",
+        session_uid: activeWebRtcSessionUid,
+        status,
+        error,
+      }, state.deviceToken, { timeoutMs: Math.min(config.requestTimeoutMs, 10000) });
+    } catch (statusError) {
+      console.error(`[agent] failed to update WebRTC status: ${statusError.message}`);
+    }
+  }
+  activeWebRtcPeer = null;
+  activeWebRtcSessionUid = "";
+}
+
+async function answerWebRtcSession(config, state, session) {
+  const nodeDataChannel = await import("node-datachannel");
+  const sessionUid = String(session.session_uid || "");
+  const offer = session.offer || {};
+  if (!sessionUid || offer.type !== "offer" || !offer.sdp) {
+    throw new Error("Invalid WebRTC offer from server.");
+  }
+
+  await closeActiveWebRtc(config, state, "closed", "replaced by new session");
+  const iceServers = (config.webRtcIceServers || [])
+    .map((server) => server?.urls || server?.url || server)
+    .flat()
+    .filter(Boolean)
+    .map(String);
+  const peer = new nodeDataChannel.PeerConnection(`agent-${sessionUid}`, {
+    iceServers,
+  });
+  activeWebRtcPeer = peer;
+  activeWebRtcSessionUid = sessionUid;
+  const candidates = [];
+  let localDescription = null;
+
+  peer.onLocalCandidate((candidate, mid) => {
+    if (candidate) {
+      candidates.push({
+        candidate,
+        sdpMid: mid,
+      });
+    }
+  });
+  peer.onLocalDescription((sdp, type) => {
+    localDescription = {
+      type,
+      sdp,
+    };
+  });
+  peer.onStateChange((stateName) => {
+    if (["failed", "disconnected", "closed"].includes(String(stateName))) {
+      console.log(`[agent] WebRTC ${stateName}`);
+      if (activeWebRtcSessionUid === sessionUid) {
+        activeWebRtcPeer = null;
+        activeWebRtcSessionUid = "";
+      }
+    }
+  });
+  peer.onDataChannel((channel) => {
+    console.log(`[agent] WebRTC data channel received: ${channel.getLabel?.() || "data"}`);
+    channel.onOpen(() => {
+      console.log("[agent] WebRTC data channel open");
+      apiJson(config, "/api/webrtc.php", {
+        action: "agent_status",
+        session_uid: sessionUid,
+        status: "connected",
+      }, state.deviceToken).catch((error) => {
+        console.error(`[agent] failed to mark WebRTC connected: ${error.message}`);
+      });
+    });
+    channel.onClosed(() => {
+      console.log("[agent] WebRTC data channel closed");
+    });
+    channel.onMessage(async (raw) => {
+      let message = null;
+      try {
+        const text = Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw || "{}");
+        message = JSON.parse(text);
+      } catch (error) {
+        channel.sendMessage(JSON.stringify({ ok: false, error: `Invalid WebRTC JSON: ${error.message}` }));
+        return;
+      }
+
+      const id = message?.id;
+      try {
+        const result = await handleDirectControl(config, message?.action, message?.payload || {});
+        channel.sendMessage(JSON.stringify({
+          id,
+          ok: true,
+          response: {
+            result,
+            transport: "webrtc-data",
+          },
+        }));
+      } catch (error) {
+        channel.sendMessage(JSON.stringify({
+          id,
+          ok: false,
+          error: error.message,
+        }));
+      }
+    });
+  });
+
+  peer.setRemoteDescription(offer.sdp, offer.type);
+  peer.setLocalDescription("answer");
+  const startedAt = Date.now();
+  while (!localDescription && Date.now() - startedAt < 5000) {
+    await sleep(50);
+  }
+  await sleep(1200);
+  if (!localDescription) {
+    throw new Error("WebRTC answer localDescription was not generated.");
+  }
+  await apiJson(config, "/api/webrtc.php", {
+    action: "agent_answer",
+    session_uid: sessionUid,
+    answer: {
+      type: String(localDescription.type || "answer").toLowerCase(),
+      sdp: localDescription.sdp,
+      candidates,
+    },
+  }, state.deviceToken);
+  console.log(`[agent] WebRTC answer posted session=${sessionUid}`);
+}
+
+async function startWebRtcLoop(config, state) {
+  if (!config.allowWebRtcTransport) {
+    return;
+  }
+  let delayMs = config.webRtcSignalPollMs;
+  while (true) {
+    try {
+      const result = await apiJson(config, "/api/webrtc.php", {
+        action: "agent_poll",
+        agent_version: AGENT_VERSION,
+        agent_boot_id: AGENT_BOOT_ID,
+      }, state.deviceToken, { timeoutMs: Math.min(config.requestTimeoutMs, 12000) });
+      if (result.session?.session_uid && result.session.session_uid !== activeWebRtcSessionUid) {
+        await answerWebRtcSession(config, state, result.session);
+      }
+      delayMs = config.webRtcSignalPollMs;
+    } catch (error) {
+      console.error(`[agent] WebRTC signal error: ${error.message}`);
+      delayMs = Math.min(15000, Math.max(config.webRtcSignalPollMs, delayMs * 1.5));
+    }
+    await sleep(delayMs);
+  }
+}
+
+let keepAwakeChild = null;
+
+function startKeepAwake(config) {
+  if (!config.preventSleepWhileRunning || process.platform !== "win32") {
+    return;
+  }
+  const script = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class NativePower {
+  [DllImport("kernel32.dll")]
+  public static extern uint SetThreadExecutionState(uint esFlags);
+}
+"@
+while ($true) {
+  [NativePower]::SetThreadExecutionState(0x80000000 -bor 0x00000001 -bor 0x00000002) | Out-Null
+  Start-Sleep -Seconds 45
+}
+`;
+  keepAwakeChild = spawn(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+    { windowsHide: true, stdio: "ignore" }
+  );
+  keepAwakeChild.unref();
+  console.log("[agent] preventSleepWhileRunning active");
 }
 
 let activeTransport = "";
@@ -1481,6 +1831,10 @@ async function main() {
   preferredTransportMode = config.initialTransportMode === "long-poll" ? "long-poll" : "poll";
   robot.setMouseDelay(0);
   robot.setKeyboardDelay(0);
+  startKeepAwake(config);
+  startWebRtcLoop(config, state).catch((error) => {
+    console.error(`[agent] WebRTC loop stopped: ${error.message}`);
+  });
 
   console.log(`[agent] visible agent v${AGENT_VERSION} started for "${config.deviceName}"`);
   console.log(`[agent] connecting to ${config.serverUrl}`);

@@ -5,6 +5,7 @@
   }
 
   const apiUrl = root.dataset.liveApi;
+  const webrtcApiUrl = root.dataset.webrtcApi;
   const csrfToken = root.dataset.csrfToken;
   const defaultCaptureIntervalMs = Math.max(400, Number(root.dataset.captureInterval || 1000));
   const defaultStatusIntervalMs = Math.max(300, Number(root.dataset.statusInterval || 650));
@@ -94,7 +95,15 @@
   let liveZoom = 1;
   let livePanX = 0;
   let livePanY = 0;
+  let panState = null;
   let detailStatusEnabled = localStorage.getItem("dsc_live_detail_status") === "on";
+  let webRtcPeer = null;
+  let webRtcChannel = null;
+  let webRtcSessionUid = "";
+  let webRtcAnswerTimer = null;
+  let webRtcState = "idle";
+  let webRtcMessageId = 0;
+  const webRtcPending = new Map();
   const remoteKeysDown = new Set();
   const pointerEventsSupported = "PointerEvent" in window;
 
@@ -229,6 +238,7 @@
   }
 
   function updateZoomState() {
+    clampLivePan();
     const label = liveZoom === 1 ? "Fit" : `${Math.round(liveZoom * 100)}%`;
     stage?.style.setProperty("--live-zoom", String(liveZoom));
     stage?.style.setProperty("--live-pan-x", `${Math.round(livePanX)}px`);
@@ -250,6 +260,42 @@
     updateZoomState();
     stage?.focus({ preventScroll: true });
     setStatus(liveZoom === 1 ? "Zoom fit" : `Zoom ${Math.round(liveZoom * 100)}%`, { detail: true });
+  }
+
+  function maxLivePan() {
+    if (liveZoom <= 1 || !screen?.classList.contains("ready")) {
+      return { x: 0, y: 0 };
+    }
+    try {
+      const box = renderedImageBox();
+      return {
+        x: Math.max(0, (box.width * (liveZoom - 1)) / 2),
+        y: Math.max(0, (box.height * (liveZoom - 1)) / 2),
+      };
+    } catch {
+      return { x: 0, y: 0 };
+    }
+  }
+
+  function clampLivePan() {
+    if (liveZoom <= 1) {
+      livePanX = 0;
+      livePanY = 0;
+      return;
+    }
+    const max = maxLivePan();
+    livePanX = Math.max(-max.x, Math.min(max.x, livePanX));
+    livePanY = Math.max(-max.y, Math.min(max.y, livePanY));
+  }
+
+  function panLiveView(deltaX, deltaY) {
+    if (liveZoom <= 1) {
+      return;
+    }
+    livePanX += deltaX;
+    livePanY += deltaY;
+    updateZoomState();
+    setStatus(`Pan ${Math.round(livePanX)}, ${Math.round(livePanY)}`, { detail: true });
   }
 
   function stepLiveZoom(direction) {
@@ -293,11 +339,20 @@
     }
     const requested = String(data.transport.requested || "poll");
     const selected = String(data.transport.primary || "http-poll");
-    const selectedLabel = selected === "http-long-poll" ? "Long poll" : "Polling";
-    const transportLabel = requested === "auto" ? `Auto · ${selectedLabel}` : selectedLabel;
-    const latencyLabel = Number.isFinite(liveRttMs) ? ` · ${Math.round(liveRttMs)}ms` : "";
+    const webRtcActive = webRtcState === "open";
+    const selectedLabel = webRtcActive || selected === "webrtc-data"
+      ? "WebRTC"
+      : selected === "http-long-poll"
+        ? "Long poll"
+        : "Polling";
+    const transportLabel = requested === "auto" ? `Auto - ${selectedLabel}` : selectedLabel;
+    const latencyLabel = Number.isFinite(liveRttMs) ? ` - ${Math.round(liveRttMs)}ms` : "";
     transport.textContent = `${transportLabel}${latencyLabel}`;
-    transport.dataset.state = requested === "long-poll" && selected !== "http-long-poll" ? "pending" : "ready";
+    transport.dataset.state = requested === "webrtc" && !webRtcActive && selected !== "webrtc-data"
+      ? "pending"
+      : requested === "long-poll" && selected !== "http-long-poll"
+        ? "pending"
+        : "ready";
     if (transportSelect && transportSelect.value !== requested) {
       transportSelect.value = requested;
     }
@@ -310,6 +365,218 @@
     root.dataset.pointerInput = pointerInputAvailable ? "stream" : "click";
     root.dataset.keyboardInput = keyboardStateAvailable ? "state" : "tap";
     root.dataset.wheelInput = wheelInputAvailable ? "on" : "off";
+    root.dataset.webrtcInput = data?.capabilities?.webrtc_data ? "available" : "missing";
+  }
+
+  function clearWebRtcAnswerTimer() {
+    if (webRtcAnswerTimer) {
+      clearTimeout(webRtcAnswerTimer);
+      webRtcAnswerTimer = null;
+    }
+  }
+
+  function closeWebRtcSession(reason = "closed") {
+    clearWebRtcAnswerTimer();
+    for (const pending of webRtcPending.values()) {
+      pending.reject(new Error(`WebRTC ${reason}`));
+    }
+    webRtcPending.clear();
+    if (webRtcChannel) {
+      try {
+        webRtcChannel.close();
+      } catch {}
+    }
+    if (webRtcPeer) {
+      try {
+        webRtcPeer.close();
+      } catch {}
+    }
+    if (webRtcSessionUid && webrtcApiUrl) {
+      fetch(webrtcApiUrl, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrfToken,
+        },
+        body: JSON.stringify({
+          action: "close",
+          csrf_token: csrfToken,
+          session_uid: webRtcSessionUid,
+        }),
+      }).catch(() => {});
+    }
+    webRtcPeer = null;
+    webRtcChannel = null;
+    webRtcSessionUid = "";
+    webRtcState = "idle";
+  }
+
+  function waitForIceGathering(peer) {
+    if (peer.iceGatheringState === "complete") {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const timeout = window.setTimeout(resolve, 2500);
+      peer.addEventListener("icegatheringstatechange", () => {
+        if (peer.iceGatheringState === "complete") {
+          clearTimeout(timeout);
+          resolve();
+        }
+      });
+    });
+  }
+
+  async function postWebRtc(action, payload = {}) {
+    if (!webrtcApiUrl) {
+      throw new Error("Endpoint WebRTC belum tersedia");
+    }
+    const response = await fetch(webrtcApiUrl, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
+      },
+      body: JSON.stringify({
+        action,
+        csrf_token: csrfToken,
+        ...payload,
+      }),
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok || data?.ok === false) {
+      throw new Error(data?.error || `WebRTC request gagal (${response.status})`);
+    }
+    return data;
+  }
+
+  async function pollWebRtcAnswer(sessionUid, generation) {
+    if (generation !== webRtcSessionUid || webRtcState === "open") {
+      return;
+    }
+    try {
+      const data = await postWebRtc("get_answer", { session_uid: sessionUid });
+      if (data.answer && webRtcPeer) {
+        await webRtcPeer.setRemoteDescription(data.answer);
+        const candidates = Array.isArray(data.answer.candidates) ? data.answer.candidates : [];
+        for (const candidate of candidates) {
+          try {
+            await webRtcPeer.addIceCandidate(candidate);
+          } catch {}
+        }
+        setStatus("WebRTC answer diterima", { detail: true });
+        return;
+      }
+      if (["failed", "closed", "expired"].includes(String(data.status))) {
+        throw new Error(data.error || `WebRTC ${data.status}`);
+      }
+      webRtcAnswerTimer = window.setTimeout(() => pollWebRtcAnswer(sessionUid, generation), 650);
+    } catch (error) {
+      closeWebRtcSession("failed");
+      setStatus(error.message);
+    }
+  }
+
+  async function startWebRtcSession() {
+    if (!webrtcApiUrl || typeof RTCPeerConnection === "undefined") {
+      setStatus("Browser tidak mendukung WebRTC data channel");
+      return;
+    }
+    if (webRtcState === "connecting" || webRtcState === "open") {
+      return;
+    }
+    closeWebRtcSession("restart");
+    webRtcState = "connecting";
+    setStatus("Membuka WebRTC...");
+    try {
+      const peer = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      });
+      const channel = peer.createDataChannel("device-control", {
+        ordered: true,
+      });
+      webRtcPeer = peer;
+      webRtcChannel = channel;
+      channel.onopen = () => {
+        webRtcState = "open";
+        setStatus("WebRTC data channel aktif");
+        setTransport({ transport: { requested: "webrtc", primary: "webrtc-data" } });
+      };
+      channel.onclose = () => {
+        if (webRtcState === "open") {
+          setStatus("WebRTC tertutup, fallback HTTP");
+        }
+        webRtcState = "idle";
+      };
+      channel.onerror = () => {
+        setStatus("WebRTC error, fallback HTTP");
+      };
+      channel.onmessage = (event) => {
+        let message = null;
+        try {
+          message = JSON.parse(String(event.data || "{}"));
+        } catch {
+          return;
+        }
+        if (!message?.id || !webRtcPending.has(message.id)) {
+          return;
+        }
+        const pending = webRtcPending.get(message.id);
+        webRtcPending.delete(message.id);
+        clearTimeout(pending.timeout);
+        if (message.ok === false) {
+          pending.reject(new Error(message.error || "WebRTC command gagal"));
+        } else {
+          pending.resolve(message);
+        }
+      };
+      peer.onconnectionstatechange = () => {
+        if (["failed", "disconnected", "closed"].includes(peer.connectionState)) {
+          closeWebRtcSession(peer.connectionState);
+        }
+      };
+
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      await waitForIceGathering(peer);
+      const created = await postWebRtc("create_offer", {
+        device_id: selectedDeviceId(),
+        offer: peer.localDescription,
+      });
+      webRtcSessionUid = created.session_uid;
+      pollWebRtcAnswer(webRtcSessionUid, webRtcSessionUid);
+    } catch (error) {
+      closeWebRtcSession("failed");
+      setStatus(error.message);
+    }
+  }
+
+  function sendWebRtcControl(action, payload) {
+    if (webRtcState !== "open" || !webRtcChannel || webRtcChannel.readyState !== "open") {
+      throw new Error("WebRTC belum aktif");
+    }
+    const id = ++webRtcMessageId;
+    webRtcChannel.send(JSON.stringify({ id, action, payload }));
+    return new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        webRtcPending.delete(id);
+        reject(new Error("WebRTC command timeout"));
+      }, 2500);
+      webRtcPending.set(id, { resolve, reject, timeout });
+    });
+  }
+
+  async function postControl(action, payload = {}) {
+    if ((transportSelect?.value || "") === "webrtc" && webRtcState === "open") {
+      try {
+        const direct = await sendWebRtcControl(action, payload);
+        return direct.response || { ok: true };
+      } catch (error) {
+        setStatus(`${error.message}; fallback HTTP`, { detail: true });
+      }
+    }
+    return postLive(action, payload);
   }
 
   function pointerCanStream() {
@@ -499,6 +766,9 @@
       setQueue(data);
       setTransport(data);
       setCapabilities(data);
+      if ((transportSelect?.value || "") === "webrtc" && webRtcState === "idle") {
+        startWebRtcSession();
+      }
       const ageSeconds = Number(data.device?.last_seen_age_seconds);
       const agentVersion = data.device?.agent_version ? ` · v${data.device.agent_version}` : "";
       if (data.device?.online) {
@@ -699,12 +969,18 @@
   });
   transportSelect?.addEventListener("change", async () => {
     try {
+      if ((transportSelect.value || "poll") !== "webrtc") {
+        closeWebRtcSession("transport change");
+      }
       const data = await postLive("transport", { mode: transportSelect.value || "poll" });
       setTransport(data);
       if (deviceSelect?.selectedOptions[0]) {
         deviceSelect.selectedOptions[0].dataset.transportMode = transportSelect.value || "poll";
       }
       setStatus(`Metode koneksi: ${transportSelect.options[transportSelect.selectedIndex]?.text || transportSelect.value}`);
+      if ((transportSelect.value || "") === "webrtc") {
+        startWebRtcSession();
+      }
     } catch (error) {
       setStatus(error.message);
       refreshStatus();
@@ -721,6 +997,7 @@
 
   deviceSelect?.addEventListener("change", () => {
     cancelPointerGesture("Device diganti");
+    closeWebRtcSession("device change");
     latestFrameId = null;
     renderFrame(null);
     if (transportSelect) {
@@ -896,7 +1173,7 @@
     try {
       while (pointerPackets.length) {
         const packet = pointerPackets.shift();
-        const data = await postLive("pointer", packet);
+        const data = await postControl("pointer", packet);
         setQueue(data);
       }
     } catch (error) {
@@ -944,7 +1221,7 @@
 
     clickInFlight = true;
     try {
-      await postLive("click", { x, y, button, double });
+      await postControl("click", { x, y, button, double });
       setQueue({ pending_capture: false, pending_click: true });
       setStatus(`${clickName(button, double)} dikirim: ${x}, ${y}`, { detail: true });
       window.setTimeout(requestFrame, 450);
@@ -1095,7 +1372,7 @@
   function sendRemoteKey(payload) {
     keyChain = keyChain
       .then(async () => {
-        const data = await postLive("key", payload);
+        const data = await postControl("key", payload);
         setQueue(data);
         setStatus(payload.kind === "text" ? "Keyboard text dikirim" : `Keyboard ${payload.key} dikirim`, { detail: true });
       })
@@ -1132,7 +1409,33 @@
     }
   }
 
+  function shouldPanStage(event) {
+    return liveZoom > 1 && (!controlIsReady() || event.altKey || event.button === 1);
+  }
+
   stage?.addEventListener("pointerdown", (event) => {
+    if (!shouldPanStage(event) || panState) {
+      return;
+    }
+    event.preventDefault();
+    stage.focus({ preventScroll: true });
+    panState = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      panX: livePanX,
+      panY: livePanY,
+    };
+    try {
+      stage.setPointerCapture(event.pointerId);
+    } catch {}
+    setStatus("Pan zoom aktif", { detail: true });
+  });
+
+  stage?.addEventListener("pointerdown", (event) => {
+    if (panState || shouldPanStage(event)) {
+      return;
+    }
     if (!pointerCanStream() || !controlIsReady() || pointerState) {
       return;
     }
@@ -1161,6 +1464,13 @@
   });
 
   stage?.addEventListener("pointermove", (event) => {
+    if (panState && event.pointerId === panState.pointerId) {
+      event.preventDefault();
+      livePanX = panState.panX + (event.clientX - panState.startX);
+      livePanY = panState.panY + (event.clientY - panState.startY);
+      updateZoomState();
+      return;
+    }
     if (!pointerCanStream() || !controlIsReady()) {
       return;
     }
@@ -1207,8 +1517,28 @@
   }
 
   stage?.addEventListener("pointerup", (event) => finishPointerGesture(event, "up"));
+  stage?.addEventListener("pointerup", (event) => {
+    if (panState && event.pointerId === panState.pointerId) {
+      event.preventDefault();
+      panState = null;
+      if (stage.hasPointerCapture(event.pointerId)) {
+        stage.releasePointerCapture(event.pointerId);
+      }
+      setStatus("Pan zoom selesai", { detail: true });
+    }
+  });
   stage?.addEventListener("pointercancel", (event) => finishPointerGesture(event, "cancel"));
+  stage?.addEventListener("pointercancel", (event) => {
+    if (panState && event.pointerId === panState.pointerId) {
+      panState = null;
+      setStatus("Pan zoom dibatalkan", { detail: true });
+    }
+  });
   stage?.addEventListener("lostpointercapture", (event) => {
+    if (panState && event.pointerId === panState.pointerId) {
+      panState = null;
+      setStatus("Pan zoom terputus", { detail: true });
+    }
     if (pointerState && event.pointerId === pointerState.pointerId) {
       cancelPointerGesture("Pointer capture terputus");
     }
@@ -1275,6 +1605,11 @@
   });
 
   stage?.addEventListener("wheel", (event) => {
+    if (liveZoom > 1 && (!controlIsReady() || event.altKey)) {
+      event.preventDefault();
+      panLiveView(-event.deltaX, -event.deltaY);
+      return;
+    }
     if (!controlIsReady() || !wheelInputAvailable) {
       return;
     }
@@ -1314,6 +1649,21 @@
   }, { passive: false });
 
   stage?.addEventListener("keydown", (event) => {
+    if (liveZoom > 1 && (!keyboardIsReady() || event.altKey)) {
+      const step = event.shiftKey ? 90 : 36;
+      const panKeys = {
+        ArrowLeft: [step, 0],
+        ArrowRight: [-step, 0],
+        ArrowUp: [0, step],
+        ArrowDown: [0, -step],
+      };
+      const delta = panKeys[event.key];
+      if (delta) {
+        event.preventDefault();
+        panLiveView(delta[0], delta[1]);
+        return;
+      }
+    }
     if (!keyboardIsReady()) {
       return;
     }
@@ -1357,6 +1707,7 @@
   window.addEventListener("beforeunload", () => {
     cancelPointerGesture();
     releaseRemoteKeys();
+    closeWebRtcSession("page unload");
     stopPointerKeepalive();
     stopTimers();
   });

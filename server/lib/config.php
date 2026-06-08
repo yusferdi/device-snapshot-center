@@ -131,6 +131,7 @@ $config = [
         'wheel_pixel_per_line' => max(4, min(160, $envInt('APP_WHEEL_PIXEL_PER_LINE', 6))),
         'wheel_page_lines' => max(3, min(90, $envInt('APP_WHEEL_PAGE_LINES', 24))),
         'wheel_max_lines' => max(3, min(160, $envInt('APP_WHEEL_MAX_LINES', 120))),
+        'webrtc_signal_ttl_seconds' => max(10, min(180, $envInt('APP_WEBRTC_SIGNAL_TTL_SECONDS', 45))),
     ],
     'allowed_artifact_mime_prefixes' => [
         'image/',
@@ -154,6 +155,8 @@ $config = [
         'keyboard_input' => 'Input keyboard',
         'keyboard_state' => 'Input keyboard stateful',
         'clipboard_write' => 'Clipboard: tulis/paste text',
+        'device_power' => 'Power/display device',
+        'agent_restart' => 'Restart agent',
         'file_list' => 'File manager: daftar file',
         'file_pull' => 'File manager: ambil file',
         'file_put' => 'File manager: kirim file',

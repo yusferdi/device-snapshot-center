@@ -77,8 +77,10 @@ Device Snapshot Center should feel like a compact remote-operations console: cal
 - Keep control-plane authentication and permissions in PHP/MySQL.
 - Select transports per capability instead of treating the whole session as one connection.
 - Prefer the lowest-latency available transport, retain a warm fallback, and upgrade again after recovery without restarting the agent.
-- Current baseline is adaptive HTTP long-poll with short-poll circuit-breaker fallback. Future WSS and WebRTC transports must preserve the same pointer sequence and epoch contract.
-- A future WebRTC input lane should allow unordered, limited-lifetime delivery for pointer move while keeping down/up and keyboard boundaries ordered and reliable.
+- Current baseline is adaptive HTTP long-poll with short-poll circuit-breaker fallback, with WebRTC data channel available as a direct input lane when agent/browser connectivity permits it.
+- WebRTC input must preserve the same pointer sequence and epoch contract as HTTP fallback.
+- A future WebRTC media lane can add realtime frames, but the current data channel must remain independently useful for low-latency mouse/keyboard control.
+- Power controls must remain explicit allowlist actions and require agent-side opt-in; never add arbitrary shell execution.
 - High-frequency pointer move commands are ephemeral and must not flood audit history or persist after successful execution.
 
 ## Mobile Rules

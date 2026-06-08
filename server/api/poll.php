@@ -176,8 +176,8 @@ $transport = [
     'requested' => $transportMode,
     'selected' => $waitMs > 0 ? 'http-long-poll' : 'http-poll',
     'available' => effective_agent_long_poll_ms('long-poll') > 0
-        ? ['http-poll', 'http-long-poll']
-        : ['http-poll'],
+        ? ['http-poll', 'http-long-poll', 'webrtc-data']
+        : ['http-poll', 'webrtc-data'],
     'wait_ms' => $waitMs,
     'probe_ms' => $probeMs,
     'mode_recheck_ms' => $modeRecheckMs,

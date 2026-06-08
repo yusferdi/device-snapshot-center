@@ -372,8 +372,8 @@ json_response([
         'primary' => (string) ($device['transport_selected'] ?? 'http-poll'),
         'fallback' => 'http-poll',
         'available' => effective_agent_long_poll_ms('long-poll') > 0
-            ? ['poll', 'long-poll', 'auto']
-            : ['poll', 'auto'],
+            ? ['poll', 'long-poll', 'webrtc', 'auto']
+            : ['poll', 'webrtc', 'auto'],
         'live_profile' => (string) ($device['live_profile'] ?? 'flow'),
         'live_until' => $device['live_until'] ?? null,
     ],
@@ -381,6 +381,7 @@ json_response([
         'pointer_input' => version_compare((string) ($device['agent_version'] ?? '0.0.0'), '1.5.0', '>='),
         'keyboard_state' => version_compare((string) ($device['agent_version'] ?? '0.0.0'), '1.6.0', '>='),
         'wheel_input' => version_compare((string) ($device['agent_version'] ?? '0.0.0'), '1.6.0', '>='),
+        'webrtc_data' => version_compare((string) ($device['agent_version'] ?? '0.0.0'), '1.9.0', '>='),
     ],
     'frame' => $frame,
     'performance' => [

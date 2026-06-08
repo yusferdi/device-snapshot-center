@@ -73,6 +73,27 @@ CREATE TABLE IF NOT EXISTS audit_events (
     ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS webrtc_sessions (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  session_uid VARCHAR(80) NOT NULL,
+  device_id BIGINT UNSIGNED NOT NULL,
+  offer_json LONGTEXT NOT NULL,
+  answer_json LONGTEXT DEFAULT NULL,
+  status ENUM('offered','answered','connected','failed','closed','expired') NOT NULL DEFAULT 'offered',
+  error_text TEXT DEFAULT NULL,
+  expires_at DATETIME NOT NULL,
+  answered_at DATETIME DEFAULT NULL,
+  connected_at DATETIME DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_webrtc_session_uid (session_uid),
+  KEY idx_webrtc_device_status (device_id, status, expires_at),
+  CONSTRAINT fk_webrtc_device
+    FOREIGN KEY (device_id) REFERENCES devices (id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS app_meta (
   meta_key VARCHAR(80) NOT NULL,
   meta_value VARCHAR(255) NOT NULL,
@@ -81,5 +102,5 @@ CREATE TABLE IF NOT EXISTS app_meta (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO app_meta (meta_key, meta_value)
-VALUES ('schema_version', '3')
+VALUES ('schema_version', '4')
 ON DUPLICATE KEY UPDATE meta_value = VALUES(meta_value);

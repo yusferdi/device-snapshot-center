@@ -15,6 +15,7 @@ const criticalFiles = {
   "api/live.php": path.join(serverRoot, "api", "live.php"),
   "api/poll.php": path.join(serverRoot, "api", "poll.php"),
   "api/upload.php": path.join(serverRoot, "api", "upload.php"),
+  "api/webrtc.php": path.join(serverRoot, "api", "webrtc.php"),
   "lib/config.php": path.join(serverRoot, "lib", "config.php"),
   "lib/db.php": path.join(serverRoot, "lib", "db.php"),
   "lib/helpers.php": path.join(serverRoot, "lib", "helpers.php"),
@@ -108,6 +109,15 @@ if (remoteVersion) {
   }
   if (remoteVersion.features?.neumorphic_ui !== true) {
     failures.push("remote release does not advertise neumorphic_ui");
+  }
+  if (remoteVersion.features?.webrtc_data_channel !== true) {
+    failures.push("remote release does not advertise webrtc_data_channel");
+  }
+  if (remoteVersion.features?.agent_power_controls !== true) {
+    failures.push("remote release does not advertise agent_power_controls");
+  }
+  if (remoteVersion.features?.zoom_pan !== true) {
+    failures.push("remote release does not advertise zoom_pan");
   }
   if (remoteVersion.release !== expected.release) {
     console.log(`[verify] remote release label ${remoteVersion.release} differs from auto hash; validating file hashes`);

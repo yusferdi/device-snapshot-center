@@ -1,6 +1,6 @@
 # User Action Required
 
-Status production pada 6 Juni 2026: perlu deploy ulang setelah fitur remote clipboard, tuning wheel sensitivity 16x, zoom live screen, focus toolbar compact, low-latency HTTP tuning, drag-and-drop upload, neumorphic UI, dan penanda WebRTC belum tersedia.
+Status production pada 6 Juni 2026: perlu deploy ulang setelah fitur remote clipboard, tuning wheel sensitivity 16x, zoom live screen, zoom pan, focus toolbar compact, low-latency HTTP tuning, drag-and-drop upload, neumorphic UI, WebRTC data channel, dan power/agent controls belum tersedia.
 
 Verifier production terakhir masih `FAILED` karena server live belum memiliki release lokal terbaru dan belum mengiklankan `remote_clipboard`.
 

@@ -279,6 +279,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['form'] ?? '') === 'send_cl
     }
 }
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['form'] ?? '') === 'device_power') {
+    require_admin();
+
+    try {
+        require_csrf();
+        $deviceId = (int) ($_POST['device_id'] ?? 0);
+        require_existing_device($deviceId);
+        $operation = (string) ($_POST['operation'] ?? '');
+        $allowedOperations = [
+            'display_off' => 'Display off',
+            'display_on' => 'Display on',
+            'restart_device' => 'Restart device',
+            'restart_agent' => 'Restart agent',
+        ];
+        if (!array_key_exists($operation, $allowedOperations)) {
+            throw new RuntimeException('Operasi power tidak valid.');
+        }
+
+        if ($operation === 'restart_agent') {
+            queue_device_command($deviceId, 'agent_restart', ['reason' => 'requested_from_dashboard'], 30);
+        } else {
+            queue_device_command($deviceId, 'device_power', [
+                'operation' => $operation,
+                'delaySeconds' => $operation === 'restart_device' ? 5 : 0,
+            ], 30);
+        }
+        $message = $allowedOperations[$operation] . ' diminta.';
+    } catch (Throwable $th) {
+        $error = $th->getMessage();
+    }
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['form'] ?? '') === 'record_session') {
     require_admin();
 
@@ -450,6 +482,7 @@ header('X-App-Release: ' . app_release());
                 class="panel live-panel"
                 data-live-dashboard
                 data-live-api="<?= h(app_url('api/live.php')) ?>"
+                data-webrtc-api="<?= h(app_url('api/webrtc.php')) ?>"
                 data-csrf-token="<?= h(csrf_token()) ?>"
                 data-capture-interval="<?= (int) ($liveConfig['capture_interval_ms'] ?? 1000) ?>"
                 data-status-interval="<?= (int) ($liveConfig['status_interval_ms'] ?? 650) ?>"
@@ -560,7 +593,6 @@ header('X-App-Release: ' . app_release());
                                     <?php foreach (transport_modes() as $transportKey => $transportLabel): ?>
                                         <option value="<?= h($transportKey) ?>"><?= h($transportLabel) ?></option>
                                     <?php endforeach; ?>
-                                    <option value="webrtc" disabled>WebRTC (not available)</option>
                                 </select>
                             </div>
                         </div>
@@ -795,6 +827,28 @@ header('X-App-Release: ' . app_release());
                             </label>
                         </div>
                         <button class="button secondary" type="submit">Rekam Sesi</button>
+                    </form>
+                    <form method="post" action="<?= h(app_url()) ?>">
+                        <input type="hidden" name="form" value="device_power">
+                        <?= csrf_field() ?>
+                        <label>
+                            Device
+                            <select name="device_id">
+                                <?php foreach ($devices as $device): ?>
+                                    <option value="<?= (int) $device['id'] ?>"><?= h($device['name']) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </label>
+                        <label>
+                            Power action
+                            <select name="operation">
+                                <option value="display_on">Display on</option>
+                                <option value="display_off">Display off</option>
+                                <option value="restart_agent">Restart agent</option>
+                                <option value="restart_device">Restart device</option>
+                            </select>
+                        </label>
+                        <button class="button danger" type="submit">Kirim Power Action</button>
                     </form>
                 </div>
             </section>

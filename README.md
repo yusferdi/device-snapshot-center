@@ -96,6 +96,11 @@ Copy-Item agent\agent.config.example.json agent\agent.config.json
 - `maxClipboardTextBytes`: batas ukuran text clipboard, default `8192`
 - `allowFileTransfer`: aktifkan file manager remote
 - `allowSessionRecording`: aktifkan recording artifact berbasis screenshot
+- `allowPowerControl`: aktifkan display on/off, restart device, sleep/hibernate, dan restart agent dari dashboard
+- `allowWebRtcTransport`: aktifkan WebRTC data channel untuk input/control direct, default `true`
+- `webRtcSignalPollMs`: interval agent mengecek offer WebRTC dari server PHP
+- `webRtcIceServers`: daftar STUN/TURN untuk WebRTC; TURN disarankan jika agent/browser berada di NAT ketat
+- `preventSleepWhileRunning`: cegah Windows sleep/display sleep selama agent berjalan; default `false`
 
 3. Jalankan agent:
 
@@ -106,6 +111,20 @@ node agent.js
 ```
 
 Agent menyimpan token di `agent/agent.state.json`, lalu memulai HTTP polling dan mengikuti pilihan metode dari dashboard. Jika token ditolak setelah deployment atau pemulihan database, agent otomatis melakukan enrollment ulang. Jika request panjang diblokir proxy, circuit breaker otomatis turun ke short-poll tanpa restart agent.
+
+Untuk menjalankan agent Windows tanpa logon, buka PowerShell sebagai Administrator di folder `agent/`, lalu jalankan:
+
+```powershell
+.\install-startup-task.ps1 -NodePath "C:\nvm4w\nodejs\node.exe"
+```
+
+Installer membuat Scheduled Task `DeviceSnapshotAgent` sebagai `SYSTEM` dan menjalankan `agent-supervisor.ps1`, sehingga agent otomatis start saat boot dan restart jika proses agent keluar. Hapus dengan:
+
+```powershell
+.\uninstall-startup-task.ps1
+```
+
+Agent tidak bisa memproses command saat device benar-benar sleep/hibernate karena CPU dan network berhenti. Yang bisa dilakukan adalah mencegah sleep saat agent berjalan (`preventSleepWhileRunning=true`) atau membuat agent otomatis hidup lagi setelah boot/wake.
 
 ## Fitur Yang Ada
 
@@ -128,7 +147,8 @@ Agent menyimpan token di `agent/agent.state.json`, lalu memulai HTTP polling dan
 - Capture layar memakai single-flight pipeline di agent; frame live yang menumpuk dikompaksi agar screenshot/upload tidak berjalan paralel tanpa batas.
 - Upload/download artifact memiliki deadline, sedangkan completion command mencoba ulang secara idempotent saat jaringan terganggu.
 - Metode koneksi dapat dipilih per-device dari dashboard: `Polling`, `Long poll`, atau `Auto`, tanpa restart agent. Agent mulai dengan `Polling`.
-- Zoom live screen mendukung `Fit`, zoom in, dan zoom out; mapping klik tetap dihitung terhadap koordinat layar agent.
+- Metode `WebRTC` tersedia sebagai data channel direct untuk mouse/keyboard saat agent `1.9+` berjalan; jika handshake gagal, input otomatis fallback ke HTTP polling.
+- Zoom live screen mendukung `Fit`, zoom in, zoom out, dan pan/geser saat zoom > 1; mapping klik tetap dihitung terhadap koordinat layar agent.
 - Grid overlay opsional untuk membantu validasi alignment layar dan koordinat klik.
 - Klik mouse jarak jauh melalui action `mouse_click` untuk left-click, double-click, dan right-click, hanya jika `allowRemoteControl` aktif di config agent.
 - Pointer drag-and-drop melalui action `mouse_input` dengan event berurutan `down`, `move`, `up`, dan `cancel`. Move batch lama dikompaksi agar antrean tidak tertinggal.
@@ -136,6 +156,7 @@ Agent menyimpan token di `agent/agent.state.json`, lalu memulai HTTP polling dan
 - Mouse wheel vertikal/horizontal dikirim sebagai pointer input. Tombol focus view memperbesar layar remote di dalam jendela browser tanpa mengunci taskbar Windows, dan toolbar focus berada di atas agar tidak menutup taskbar remote.
 - Input keyboard jarak jauh melalui action `keyboard_input`, hanya jika `allowRemoteControl` dan `allowKeyboardInput` aktif di config agent.
 - Copy/paste clipboard dari dashboard ke agent melalui action `clipboard_write`; agent menulis clipboard OS, lalu opsional langsung menjalankan paste ke window aktif.
+- Power controls melalui action `device_power` dan `agent_restart`, hanya jika `allowPowerControl` aktif di config agent.
 - Agent `1.6+` memakai keyboard state `down/up`, mendukung tahan tombol, key repeat OS, Backspace, Delete, arrow, F1-F24, modifier, numpad, dan media key.
 - Koordinat pointer memakai ukuran layar kontrol agent, sehingga tetap presisi saat ukuran screenshot dan DPI Windows berbeda.
 - File transfer dua arah melalui folder `fileTransferRoot`, hanya jika `allowFileTransfer` aktif.
@@ -160,6 +181,8 @@ Agent menyimpan token di `agent/agent.state.json`, lalu memulai HTTP polling dan
 - `keyboard_input`: input keyboard dari live view. Payload mendukung `kind=text` untuk karakter biasa atau `kind=key` untuk tombol seperti `enter`, `backspace`, `left`, `right`, dan modifier `control`, `alt`, `shift`.
 - `keyboard_state`: event keyboard ephemeral `down/up` untuk pengalaman input stateful agent `1.6+`.
 - `clipboard_write`: tulis text ke clipboard agent dan opsional paste ke window aktif. Payload mendukung `text` dan `paste`.
+- `device_power`: kontrol power/display terbatas. Payload mendukung `operation=display_on`, `display_off`, `restart_device`, `sleep`, atau `hibernate`.
+- `agent_restart`: minta agent keluar setelah completion; supervisor/scheduled task akan menghidupkannya lagi jika dipasang.
 - `file_list`: daftar isi folder transfer agent.
 - `file_pull`: ambil file dari folder transfer agent sebagai artifact dashboard.
 - `file_put`: kirim upload dashboard ke folder transfer agent.
@@ -179,17 +202,17 @@ Payload contoh untuk `run_diagnostic`:
 
 ## Catatan Keamanan
 
-Prototype ini sengaja tidak menyediakan arbitrary shell command atau akses file bebas. Remote mouse/keyboard/file/recording harus diaktifkan eksplisit di config agent, dibatasi permission profile device, dan tetap hanya menjalankan aksi yang ada di allowlist.
+Prototype ini sengaja tidak menyediakan arbitrary shell command atau akses file bebas. Remote mouse/keyboard/file/recording/power harus diaktifkan eksplisit di config agent, dibatasi permission profile device, dan tetap hanya menjalankan aksi yang ada di allowlist.
 
 ## Adaptive Transport
 
-Fondasi saat ini memulai agent melalui `http-poll`, dengan `http-long-poll` tersedia sebagai metode yang dapat dipilih dari dashboard. Server mengirim preferensi transport pada setiap respons poll, sehingga metode dapat berubah tanpa restart agent.
+Fondasi saat ini memulai agent melalui `http-poll`, dengan `http-long-poll` dan `webrtc-data` tersedia sebagai metode yang dapat dipilih dari dashboard. Server mengirim preferensi transport pada setiap respons poll, sehingga metode dapat berubah tanpa restart agent.
 
 `Polling` berarti agent bertanya ke server secara berkala lalu tidur sebentar. `Long poll` berarti agent membuka request yang ditahan server sampai ada command baru atau timeout, sehingga command bisa lebih cepat diterima tanpa spam request kosong. `Auto` mempertahankan metode stabil dan membiarkan agent fallback jika long-poll diblokir proxy.
 
 Dashboard menyimpan `transport_mode` per device dan metode efektif terakhir. `Polling` adalah default. Pilihan `Long poll` akan tetap jatuh ke `Polling` jika runtime server tidak mendukung request panjang.
 
-WebRTC belum tersedia sebagai transport aktif. Opsi ini membutuhkan signaling endpoint, STUN/TURN, dan data/media channel agent sebelum bisa dipilih dari dashboard.
+`WebRTC` sekarang memakai endpoint signaling PHP `api/webrtc.php` dan Node dependency `node-datachannel`. Jalur ini mempercepat input mouse/keyboard melalui data channel direct; frame live masih memakai HTTP snapshot sampai encoder/media track realtime ditambahkan. Pada NAT ketat, konfigurasi TURN diperlukan agar WebRTC dapat terhubung stabil.
 
 - `APP_AGENT_LONG_POLL_MS=15000`: durasi tunggu request agent; isi `0` untuk memaksa short-poll.
 - `APP_LIVE_CAPTURE_INTERVAL_MS=1000`: interval default request frame live; mode Burst menurunkannya otomatis.
