@@ -39,6 +39,7 @@ json_response([
         'zoom_pan' => true,
         'quiet_awake' => true,
         'frame_loop_pause' => true,
+        'webrtc_direct_frames' => true,
     ],
     'files' => $files,
     'generated_at' => gmdate('c'),

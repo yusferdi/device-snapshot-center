@@ -382,6 +382,7 @@ json_response([
         'keyboard_state' => version_compare((string) ($device['agent_version'] ?? '0.0.0'), '1.6.0', '>='),
         'wheel_input' => version_compare((string) ($device['agent_version'] ?? '0.0.0'), '1.6.0', '>='),
         'webrtc_data' => version_compare((string) ($device['agent_version'] ?? '0.0.0'), '1.9.0', '>='),
+        'webrtc_frames' => version_compare((string) ($device['agent_version'] ?? '0.0.0'), '1.11.0', '>='),
     ],
     'frame' => $frame,
     'performance' => [

@@ -125,6 +125,9 @@ if (remoteVersion) {
   if (remoteVersion.features?.frame_loop_pause !== true) {
     failures.push("remote release does not advertise frame_loop_pause");
   }
+  if (remoteVersion.features?.webrtc_direct_frames !== true) {
+    failures.push("remote release does not advertise webrtc_direct_frames");
+  }
   if (remoteVersion.release !== expected.release) {
     console.log(`[verify] remote release label ${remoteVersion.release} differs from auto hash; validating file hashes`);
   }

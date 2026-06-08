@@ -9,7 +9,7 @@ import robot from "robotjs";
 import screenshotDesktop from "screenshot-desktop";
 
 const execFileAsync = promisify(execFile);
-const AGENT_VERSION = "1.10.0";
+const AGENT_VERSION = "1.11.0";
 const AGENT_BOOT_ID = crypto.randomUUID();
 const AGENT_BOOT_STARTED_AT = Date.now();
 const CONFIG_PATH = path.resolve("agent.config.json");
@@ -112,6 +112,8 @@ async function loadConfig() {
     allowPowerControl: Boolean(config.allowPowerControl),
     allowWebRtcTransport: config.allowWebRtcTransport !== false,
     webRtcSignalPollMs: Math.round(clampNumber(config.webRtcSignalPollMs, 500, 10000, 1000)),
+    webRtcFrameFps: Math.round(clampNumber(config.webRtcFrameFps, 1, 24, 10)),
+    webRtcFrameChunkBytes: Math.round(clampNumber(config.webRtcFrameChunkBytes, 16384, 262144, 65536)),
     webRtcIceServers: Array.isArray(config.webRtcIceServers) && config.webRtcIceServers.length
       ? config.webRtcIceServers
       : [{ urls: "stun:stun.l.google.com:19302" }],
@@ -1596,8 +1598,100 @@ async function handleDirectControl(config, action, payload) {
 
 let activeWebRtcPeer = null;
 let activeWebRtcSessionUid = "";
+let activeWebRtcFrameChannel = null;
+let activeWebRtcFrameLoop = null;
+
+function sendJsonDataChannel(channel, payload) {
+  channel.sendMessage(JSON.stringify(payload));
+}
+
+function sendBinaryDataChannel(channel, buffer) {
+  if (typeof channel.sendMessageBinary === "function") {
+    channel.sendMessageBinary(buffer);
+    return;
+  }
+  channel.sendMessage(buffer);
+}
+
+function stopWebRtcFrameLoop(reason = "stopped") {
+  if (activeWebRtcFrameLoop) {
+    activeWebRtcFrameLoop.stopped = true;
+    activeWebRtcFrameLoop = null;
+  }
+  if (reason) {
+    console.log(`[agent] WebRTC frame loop ${reason}`);
+  }
+}
+
+async function sendWebRtcFrame(channel, config, frameId) {
+  const snapshot = await captureScreen(config, { timeoutMs: 5000 });
+  const chunkBytes = Math.max(16384, Math.min(262144, Number(config.webRtcFrameChunkBytes || 65536)));
+  const totalChunks = Math.ceil(snapshot.buffer.length / chunkBytes);
+  sendJsonDataChannel(channel, {
+    kind: "frame-start",
+    id: frameId,
+    mime: snapshot.mimeType,
+    bytes: snapshot.buffer.length,
+    chunks: totalChunks,
+    screen: snapshot.metadata,
+  });
+  for (let index = 0; index < totalChunks; index += 1) {
+    const start = index * chunkBytes;
+    const chunk = snapshot.buffer.subarray(start, Math.min(snapshot.buffer.length, start + chunkBytes));
+    sendBinaryDataChannel(channel, chunk);
+    if (index % 4 === 0) {
+      await sleep(0);
+    }
+  }
+  sendJsonDataChannel(channel, {
+    kind: "frame-end",
+    id: frameId,
+  });
+}
+
+function startWebRtcFrameLoop(channel, config, requestedFps = null) {
+  stopWebRtcFrameLoop("restarted");
+  const loop = {
+    stopped: false,
+    frameId: 0,
+  };
+  activeWebRtcFrameLoop = loop;
+  const fps = Math.max(1, Math.min(24, Number(requestedFps || config.webRtcFrameFps || 10)));
+  const intervalMs = Math.max(40, Math.round(1000 / fps));
+  console.log(`[agent] WebRTC direct frame loop starting fps=${fps}`);
+  (async () => {
+    while (!loop.stopped) {
+      const startedAt = Date.now();
+      try {
+        if (!channel.isOpen || !channel.isOpen()) {
+          break;
+        }
+        loop.frameId += 1;
+        await sendWebRtcFrame(channel, config, loop.frameId);
+      } catch (error) {
+        try {
+          sendJsonDataChannel(channel, {
+            kind: "frame-error",
+            error: error.message,
+          });
+        } catch {}
+        console.error(`[agent] WebRTC frame failed: ${error.message}`);
+        await sleep(750);
+      }
+      const elapsed = Date.now() - startedAt;
+      await sleep(Math.max(0, intervalMs - elapsed));
+    }
+    if (activeWebRtcFrameLoop === loop) {
+      activeWebRtcFrameLoop = null;
+    }
+  })().catch((error) => {
+    console.error(`[agent] WebRTC frame loop stopped: ${error.message}`);
+  });
+}
 
 async function closeActiveWebRtc(config, state, status = "closed", error = "") {
+  stopWebRtcFrameLoop("closed");
+  activeWebRtcFrameChannel = null;
   if (activeWebRtcPeer) {
     try {
       activeWebRtcPeer.close();
@@ -1665,7 +1759,43 @@ async function answerWebRtcSession(config, state, session) {
     }
   });
   peer.onDataChannel((channel) => {
-    console.log(`[agent] WebRTC data channel received: ${channel.getLabel?.() || "data"}`);
+    const channelLabel = String(channel.getLabel?.() || "data");
+    console.log(`[agent] WebRTC data channel received: ${channelLabel}`);
+    if (channelLabel === "screen-frame") {
+      activeWebRtcFrameChannel = channel;
+      channel.onOpen(() => {
+        console.log("[agent] WebRTC frame channel open");
+      });
+      channel.onClosed(() => {
+        stopWebRtcFrameLoop("channel closed");
+        if (activeWebRtcFrameChannel === channel) {
+          activeWebRtcFrameChannel = null;
+        }
+      });
+      channel.onMessage(async (raw) => {
+        let message = null;
+        try {
+          const text = Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw || "{}");
+          message = JSON.parse(text);
+        } catch (error) {
+          sendJsonDataChannel(channel, { kind: "frame-error", error: `Invalid frame control JSON: ${error.message}` });
+          return;
+        }
+        const action = String(message?.action || "");
+        if (action === "start") {
+          startWebRtcFrameLoop(channel, config, message?.fps);
+        } else if (action === "stop") {
+          stopWebRtcFrameLoop("requested");
+        } else if (action === "capture_once") {
+          try {
+            await sendWebRtcFrame(channel, config, Number(message?.id || Date.now()));
+          } catch (error) {
+            sendJsonDataChannel(channel, { kind: "frame-error", error: error.message });
+          }
+        }
+      });
+      return;
+    }
     channel.onOpen(() => {
       console.log("[agent] WebRTC data channel open");
       apiJson(config, "/api/webrtc.php", {

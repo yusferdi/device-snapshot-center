@@ -100,6 +100,8 @@ Copy-Item agent\agent.config.example.json agent\agent.config.json
 - `allowPowerControl`: aktifkan display on/off, restart device, sleep/hibernate, dan restart agent dari dashboard
 - `allowWebRtcTransport`: aktifkan WebRTC data channel untuk input/control direct, default `true`
 - `webRtcSignalPollMs`: interval agent mengecek offer WebRTC dari server PHP
+- `webRtcFrameFps`: target FPS untuk direct frame channel saat dashboard memakai metode `WebRTC`, default `10`
+- `webRtcFrameChunkBytes`: ukuran chunk binary frame WebRTC, default `65536`
 - `webRtcIceServers`: daftar STUN/TURN untuk WebRTC; TURN disarankan jika agent/browser berada di NAT ketat
 - `preventSleepWhileRunning`: cegah Windows sleep/display sleep selama agent berjalan; default `false`
 
@@ -272,7 +274,7 @@ Fondasi saat ini memulai agent melalui `http-poll`, dengan `http-long-poll` dan 
 
 Dashboard menyimpan `transport_mode` per device dan metode efektif terakhir. `Polling` adalah default. Pilihan `Long poll` akan tetap jatuh ke `Polling` jika runtime server tidak mendukung request panjang.
 
-`WebRTC` sekarang memakai endpoint signaling PHP `api/webrtc.php` dan Node dependency `node-datachannel`. Jalur ini mempercepat input mouse/keyboard melalui data channel direct; frame live masih memakai HTTP snapshot sampai encoder/media track realtime ditambahkan. Pada NAT ketat, konfigurasi TURN diperlukan agar WebRTC dapat terhubung stabil.
+`WebRTC` sekarang memakai endpoint signaling PHP `api/webrtc.php` dan Node dependency `node-datachannel`. Jalur ini mempercepat input mouse/keyboard melalui data channel direct. Agent `1.11+` juga menambahkan direct frame channel `screen-frame`: saat metode `WebRTC` aktif dan toggle `Frames` menyala, browser menerima JPEG frame langsung dari agent tanpa upload artifact, database, atau storage. Jalur HTTP snapshot tetap menjadi fallback dan tombol `Capture frame` tetap bisa mengambil frame manual. Pada NAT ketat, konfigurasi TURN diperlukan agar WebRTC dapat terhubung stabil.
 
 - `APP_AGENT_LONG_POLL_MS=15000`: durasi tunggu request agent; isi `0` untuk memaksa short-poll.
 - `APP_LIVE_CAPTURE_INTERVAL_MS=1000`: interval default request frame live; mode Burst menurunkannya otomatis.

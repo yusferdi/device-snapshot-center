@@ -90,6 +90,7 @@
   let pointerInputAvailable = false;
   let keyboardStateAvailable = false;
   let wheelInputAvailable = false;
+  let webRtcFramesAvailable = false;
   let wheelRemainderX = 0;
   let wheelRemainderY = 0;
   let liveRttMs = null;
@@ -101,9 +102,13 @@
   let detailStatusEnabled = localStorage.getItem("dsc_live_detail_status") === "on";
   let webRtcPeer = null;
   let webRtcChannel = null;
+  let webRtcFrameChannel = null;
   let webRtcSessionUid = "";
   let webRtcAnswerTimer = null;
   let webRtcState = "idle";
+  let webRtcFrameState = "idle";
+  let webRtcFrameAssembly = null;
+  let webRtcFrameObjectUrl = "";
   let webRtcMessageId = 0;
   const webRtcPending = new Map();
   const remoteKeysDown = new Set();
@@ -372,10 +377,12 @@
     pointerInputAvailable = Boolean(data?.capabilities?.pointer_input);
     keyboardStateAvailable = Boolean(data?.capabilities?.keyboard_state);
     wheelInputAvailable = Boolean(data?.capabilities?.wheel_input);
+    webRtcFramesAvailable = Boolean(data?.capabilities?.webrtc_frames);
     root.dataset.pointerInput = pointerInputAvailable ? "stream" : "click";
     root.dataset.keyboardInput = keyboardStateAvailable ? "state" : "tap";
     root.dataset.wheelInput = wheelInputAvailable ? "on" : "off";
     root.dataset.webrtcInput = data?.capabilities?.webrtc_data ? "available" : "missing";
+    root.dataset.webrtcFrames = webRtcFramesAvailable ? "available" : "missing";
   }
 
   function clearWebRtcAnswerTimer() {
@@ -394,6 +401,11 @@
     if (webRtcChannel) {
       try {
         webRtcChannel.close();
+      } catch {}
+    }
+    if (webRtcFrameChannel) {
+      try {
+        webRtcFrameChannel.close();
       } catch {}
     }
     if (webRtcPeer) {
@@ -418,8 +430,11 @@
     }
     webRtcPeer = null;
     webRtcChannel = null;
+    webRtcFrameChannel = null;
     webRtcSessionUid = "";
     webRtcState = "idle";
+    webRtcFrameState = "idle";
+    webRtcFrameAssembly = null;
   }
 
   function waitForIceGathering(peer) {
@@ -488,6 +503,76 @@
     }
   }
 
+  function sendWebRtcFrameControl(action, payload = {}) {
+    if (!webRtcFrameChannel || webRtcFrameChannel.readyState !== "open") {
+      return false;
+    }
+    webRtcFrameChannel.send(JSON.stringify({ action, ...payload }));
+    return true;
+  }
+
+  function startWebRtcFrames() {
+    if ((transportSelect?.value || "") !== "webrtc" || !framesAreEnabled() || !webRtcFramesAvailable) {
+      return;
+    }
+    if (sendWebRtcFrameControl("start", { fps: activeSpeed === "burst" ? 16 : activeSpeed === "eco" ? 4 : 10 })) {
+      webRtcFrameState = "streaming";
+      setStatus("WebRTC direct frames aktif", { detail: true });
+    }
+  }
+
+  function stopWebRtcFrames() {
+    sendWebRtcFrameControl("stop");
+    webRtcFrameState = "idle";
+    webRtcFrameAssembly = null;
+  }
+
+  async function readBinaryFrameChunk(data) {
+    if (data instanceof ArrayBuffer) {
+      return new Uint8Array(data);
+    }
+    if (data instanceof Blob) {
+      return new Uint8Array(await data.arrayBuffer());
+    }
+    return null;
+  }
+
+  async function handleWebRtcFrameMessage(event) {
+    if (typeof event.data === "string") {
+      let message = null;
+      try {
+        message = JSON.parse(event.data || "{}");
+      } catch {
+        return;
+      }
+      if (message.kind === "frame-start") {
+        webRtcFrameAssembly = {
+          id: message.id,
+          mime: message.mime || "image/jpeg",
+          screen: message.screen || null,
+          chunks: [],
+          expectedChunks: Number(message.chunks || 0),
+        };
+      } else if (message.kind === "frame-end" && webRtcFrameAssembly?.id === message.id) {
+        const blob = new Blob(webRtcFrameAssembly.chunks, { type: webRtcFrameAssembly.mime });
+        const frame = {
+          id: webRtcFrameAssembly.id,
+          blob,
+          screen: webRtcFrameAssembly.screen,
+        };
+        webRtcFrameAssembly = null;
+        await renderDirectFrame(frame);
+      } else if (message.kind === "frame-error") {
+        setStatus(message.error || "WebRTC frame error");
+      }
+      return;
+    }
+    const chunk = await readBinaryFrameChunk(event.data);
+    if (chunk && webRtcFrameAssembly) {
+      webRtcFrameAssembly.chunks.push(chunk);
+    }
+  }
+
   async function startWebRtcSession() {
     if (!webrtcApiUrl || typeof RTCPeerConnection === "undefined") {
       setStatus("Browser tidak mendukung WebRTC data channel");
@@ -506,12 +591,17 @@
       const channel = peer.createDataChannel("device-control", {
         ordered: true,
       });
+      const frameChannel = peer.createDataChannel("screen-frame", {
+        ordered: true,
+      });
       webRtcPeer = peer;
       webRtcChannel = channel;
+      webRtcFrameChannel = frameChannel;
       channel.onopen = () => {
         webRtcState = "open";
         setStatus("WebRTC data channel aktif");
         setTransport({ transport: { requested: "webrtc", primary: "webrtc-data" } });
+        startWebRtcFrames();
       };
       channel.onclose = () => {
         if (webRtcState === "open") {
@@ -521,6 +611,19 @@
       };
       channel.onerror = () => {
         setStatus("WebRTC error, fallback HTTP");
+      };
+      frameChannel.onopen = () => {
+        webRtcFrameState = "open";
+        startWebRtcFrames();
+      };
+      frameChannel.onclose = () => {
+        webRtcFrameState = "idle";
+      };
+      frameChannel.onerror = () => {
+        setStatus("WebRTC frame channel error", { detail: true });
+      };
+      frameChannel.onmessage = (event) => {
+        handleWebRtcFrameMessage(event).catch((error) => setStatus(error.message));
       };
       channel.onmessage = (event) => {
         let message = null;
@@ -716,6 +819,43 @@
     });
   }
 
+  async function renderDirectFrame(frame) {
+    if (!frame?.blob) {
+      return;
+    }
+    const url = URL.createObjectURL(frame.blob);
+    try {
+      const loadedImage = await loadFrameImage(url);
+      if (webRtcFrameObjectUrl) {
+        URL.revokeObjectURL(webRtcFrameObjectUrl);
+      }
+      webRtcFrameObjectUrl = url;
+      latestFrameId = `rtc-${frame.id}`;
+      screen.src = url;
+      screen.dataset.frameId = String(latestFrameId);
+      screen.dataset.naturalWidth = String(loadedImage.naturalWidth || "");
+      screen.dataset.naturalHeight = String(loadedImage.naturalHeight || "");
+      screen.dataset.controlWidth = String(frame.screen?.controlScreenSize?.width || loadedImage.naturalWidth || "");
+      screen.dataset.controlHeight = String(frame.screen?.controlScreenSize?.height || loadedImage.naturalHeight || "");
+      if (loadedImage.naturalWidth && loadedImage.naturalHeight) {
+        root.style.setProperty("--screen-aspect", `${loadedImage.naturalWidth} / ${loadedImage.naturalHeight}`);
+      }
+      screen.classList.add("ready");
+      controlToggle.disabled = false;
+      syncControlState();
+      empty.hidden = true;
+      setFrameFreshness({
+        id: `rtc-${frame.id}`,
+        completed_at: frame.screen?.capturedAt || new Date().toISOString(),
+        observed_at: frame.screen?.capturedAt || new Date().toISOString(),
+        screen: frame.screen,
+      });
+    } catch (error) {
+      URL.revokeObjectURL(url);
+      setStatus(error.message);
+    }
+  }
+
   async function renderFrame(frame) {
     setFrameFreshness(frame);
     if (!frame) {
@@ -808,6 +948,14 @@
     if (!options.force && !framesAreEnabled()) {
       setMode("Frames paused", "paused");
       setStatus("Frame loop paused");
+      return;
+    }
+    if ((transportSelect?.value || "") === "webrtc" && webRtcFramesAvailable && webRtcFrameChannel?.readyState === "open") {
+      if (options.force) {
+        sendWebRtcFrameControl("capture_once", { id: Date.now() });
+      } else {
+        startWebRtcFrames();
+      }
       return;
     }
 
@@ -928,6 +1076,7 @@
     localStorage.setItem("dsc_live_frames", frameLoopEnabled ? "on" : "off");
     updateSwitchAria();
     if (!frameLoopEnabled) {
+      stopWebRtcFrames();
       if (captureTimer) {
         clearTimeout(captureTimer);
         captureTimer = null;
@@ -937,6 +1086,7 @@
       return;
     }
     setStatus("Frame loop resumed");
+    startWebRtcFrames();
     if (liveToggle?.checked && !document.hidden) {
       startLive();
     }

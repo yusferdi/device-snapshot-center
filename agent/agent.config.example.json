@@ -23,6 +23,8 @@
   "allowPowerControl": false,
   "allowWebRtcTransport": true,
   "webRtcSignalPollMs": 1000,
+  "webRtcFrameFps": 10,
+  "webRtcFrameChunkBytes": 65536,
   "webRtcIceServers": [
     { "urls": "stun:stun.l.google.com:19302" }
   ],
