@@ -7,7 +7,12 @@ param(
 $ErrorActionPreference = "Stop"
 $AgentRoot = (Resolve-Path -LiteralPath $AgentRoot).Path
 $LogRoot = Join-Path $AgentRoot "logs"
+$AgentScript = Join-Path $AgentRoot "agent.js"
 New-Item -ItemType Directory -Force -Path $LogRoot | Out-Null
+
+if (-not (Test-Path -LiteralPath $AgentScript)) {
+    throw "agent.js not found at $AgentScript"
+}
 
 while ($true) {
     $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -15,7 +20,7 @@ while ($true) {
     $stdout = Join-Path $LogRoot "agent-service.log"
     $stderr = Join-Path $LogRoot "agent-service.err.log"
     $process = Start-Process -FilePath $NodePath `
-        -ArgumentList @("agent.js") `
+        -ArgumentList @("`"$AgentScript`"") `
         -WorkingDirectory $AgentRoot `
         -WindowStyle Hidden `
         -RedirectStandardOutput $stdout `

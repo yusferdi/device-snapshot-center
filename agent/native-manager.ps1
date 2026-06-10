@@ -1,7 +1,8 @@
 param(
     [string] $AgentRoot = $PSScriptRoot,
     [string] $TaskName = "DeviceSnapshotAgent",
-    [switch] $SelfTest
+    [switch] $SelfTest,
+    [switch] $SmokeStartStop
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,6 +12,7 @@ $ExampleConfigPath = Join-Path $AgentRoot "agent.config.example.json"
 $RuntimeRoot = Join-Path $AgentRoot "runtime"
 $LogRoot = Join-Path $AgentRoot "logs"
 $NodeRuntimeRoot = Join-Path $RuntimeRoot "node"
+$NativeStatePath = Join-Path $AgentRoot "agent-native.state.json"
 
 function Ensure-Directory {
     param([string] $Path)
@@ -48,6 +50,15 @@ function Save-JsonFile {
     param([string] $Path, [object] $Value)
     $json = $Value | ConvertTo-Json -Depth 32
     Set-Content -LiteralPath $Path -Value $json -Encoding UTF8
+}
+
+function Get-NativeState {
+    return Get-JsonFile -Path $NativeStatePath -Fallback ([pscustomobject]@{})
+}
+
+function Save-NativeState {
+    param([object] $State)
+    Save-JsonFile -Path $NativeStatePath -Value $State
 }
 
 function Get-AgentConfig {
@@ -184,14 +195,44 @@ function Get-AgentProcesses {
     if ($PSVersionTable.PSVersion.Major -lt 3) {
         return @()
     }
-    $items = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-        $_.CommandLine -and
-        $_.CommandLine.Contains("agent.js") -and
-        $_.CommandLine.Contains($AgentRoot) -and
-        -not $_.CommandLine.Contains("agent-manager.js") -and
-        -not $_.CommandLine.Contains("native-manager.ps1")
-    } | Select-Object ProcessId, Name, CommandLine)
-    return $items
+    $items = @()
+    $agentScript = Join-Path $AgentRoot "agent.js"
+    try {
+        $items = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+            $_.CommandLine -and
+            $_.CommandLine.Contains("agent.js") -and
+            (
+                $_.CommandLine.Contains($AgentRoot) -or
+                $_.CommandLine.Contains($agentScript)
+            ) -and
+            -not $_.CommandLine.Contains("agent-manager.js") -and
+            -not $_.CommandLine.Contains("native-manager.ps1")
+        } | Select-Object ProcessId, Name, CommandLine)
+    } catch {
+        $items = @()
+    }
+
+    $seen = @{}
+    foreach ($item in $items) {
+        $seen[[int] $item.ProcessId] = $true
+    }
+
+    $state = Get-NativeState
+    $statePid = 0
+    if ($state.PSObject.Properties.Name -contains "AgentPid") {
+        $statePid = [int] $state.AgentPid
+    }
+    if ($statePid -gt 0 -and -not $seen.ContainsKey($statePid)) {
+        $process = Get-Process -Id $statePid -ErrorAction SilentlyContinue
+        if ($process -and -not $process.HasExited) {
+            $items += [pscustomobject]@{
+                ProcessId = $process.Id
+                Name = $process.ProcessName
+                CommandLine = "tracked by native manager state"
+            }
+        }
+    }
+    return @($items)
 }
 
 function Start-AgentProcess {
@@ -200,13 +241,41 @@ function Start-AgentProcess {
         throw "Node.js was not found. Click Bootstrap Node + Dependencies first."
     }
     Ensure-Directory $LogRoot
+    $alreadyRunning = @(Get-AgentProcesses)
+    if ($alreadyRunning.Count -gt 0) {
+        return [pscustomobject]@{
+            Started = $false
+            Pid = [int] $alreadyRunning[0].ProcessId
+            Message = "Agent already running."
+        }
+    }
+    $agentScript = Join-Path $AgentRoot "agent.js"
     $process = Invoke-HiddenProcess `
         -FilePath $NodePath `
-        -ArgumentList @("agent.js") `
+        -ArgumentList @("`"$agentScript`"") `
         -WorkingDirectory $AgentRoot `
         -Stdout (Join-Path $LogRoot "agent-native.log") `
         -Stderr (Join-Path $LogRoot "agent-native.err.log")
-    return $process.Id
+    Save-NativeState ([pscustomobject]@{
+        AgentPid = [int] $process.Id
+        NodePath = $NodePath
+        StartedAt = (Get-Date).ToString("o")
+    })
+    Start-Sleep -Milliseconds 700
+    $process.Refresh()
+    if ($process.HasExited) {
+        Save-NativeState ([pscustomobject]@{
+            AgentPid = 0
+            LastExitCode = $process.ExitCode
+            LastExitAt = (Get-Date).ToString("o")
+        })
+        throw "Agent exited immediately with code $($process.ExitCode). Check Logs > agent-native.err.log."
+    }
+    return [pscustomobject]@{
+        Started = $true
+        Pid = [int] $process.Id
+        Message = "Agent started."
+    }
 }
 
 function Stop-AgentProcess {
@@ -214,6 +283,10 @@ function Stop-AgentProcess {
     foreach ($item in $processes) {
         taskkill.exe /PID $item.ProcessId /T /F | Out-Null
     }
+    Save-NativeState ([pscustomobject]@{
+        AgentPid = 0
+        StoppedAt = (Get-Date).ToString("o")
+    })
     return $processes.Count
 }
 
@@ -240,23 +313,40 @@ function Install-AgentTask {
     if (-not (Test-IsAdmin)) {
         throw "Installing the startup task requires PowerShell as Administrator."
     }
-    $args = @(
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        (Join-Path $AgentRoot "install-startup-task.ps1"),
-        "-TaskName",
-        $TaskName,
-        "-AgentRoot",
-        $AgentRoot,
-        "-NodePath",
-        $NodePath
-    )
-    if ($WakeToRun) {
-        $args += "-WakeToRun"
+    $supervisor = Join-Path $AgentRoot "agent-supervisor.ps1"
+    if (-not (Test-Path -LiteralPath $supervisor)) {
+        throw "agent-supervisor.ps1 not found at $supervisor"
     }
-    Invoke-HiddenProcess -FilePath "powershell.exe" -ArgumentList $args -WorkingDirectory $AgentRoot -Wait | Out-Null
+
+    $powerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+    $action = New-ScheduledTaskAction `
+        -Execute $powerShell `
+        -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$supervisor`" -AgentRoot `"$AgentRoot`" -NodePath `"$NodePath`""
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest -LogonType ServiceAccount
+    $settings = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Seconds 0) `
+        -RestartCount 999 `
+        -RestartInterval (New-TimeSpan -Minutes 1) `
+        -StartWhenAvailable `
+        -WakeToRun:$WakeToRun
+
+    Register-ScheduledTask `
+        -TaskName $TaskName `
+        -Action $action `
+        -Trigger $trigger `
+        -Principal $principal `
+        -Settings $settings `
+        -Force | Out-Null
+    Start-ScheduledTask -TaskName $TaskName
+
+    $installed = Get-TaskStatus
+    if (-not $installed.Installed) {
+        throw "Scheduled Task was not found after install."
+    }
+    return "Installed $TaskName as SYSTEM and started it."
 }
 
 function Install-PermanentStartupFromForm {
@@ -330,7 +420,43 @@ if ($SelfTest) {
         serverUri = $config.serverUri
         task = Get-TaskStatus
         agentProcesses = @(Get-AgentProcesses).Count
+        isAdmin = Test-IsAdmin
     } | ConvertTo-Json -Depth 6
+    exit 0
+}
+
+if ($SmokeStartStop) {
+    $before = @(Get-AgentProcesses)
+    if ($before.Count -gt 0) {
+        [pscustomobject]@{
+            ok = $true
+            skipped = $true
+            reason = "Agent was already running; smoke test did not stop existing process."
+            pids = @($before | ForEach-Object { $_.ProcessId })
+        } | ConvertTo-Json -Depth 4
+        exit 0
+    }
+
+    $node = Get-NodePath
+    if (-not $node) {
+        throw "Node.js was not found. Cannot run smoke start/stop."
+    }
+    $started = Start-AgentProcess -NodePath $node
+    Start-Sleep -Milliseconds 800
+    $running = @(Get-AgentProcesses)
+    $stopped = Stop-AgentProcess
+    Start-Sleep -Milliseconds 500
+    $after = @(Get-AgentProcesses)
+    [pscustomobject]@{
+        ok = ($running.Count -gt 0 -and $after.Count -eq 0)
+        startedPid = $started.Pid
+        detectedPids = @($running | ForEach-Object { $_.ProcessId })
+        stopped = $stopped
+        remaining = $after.Count
+    } | ConvertTo-Json -Depth 4
+    if ($running.Count -lt 1 -or $after.Count -gt 0) {
+        exit 1
+    }
     exit 0
 }
 
@@ -861,6 +987,14 @@ function Refresh-Status {
     Set-StatusLabel $taskStatus $taskLabel $taskTone
     Set-StatusLabel $adminStatus $adminLabel $adminTone
     $quickPermanentButton.Text = if ($task.Installed) { "Repair Permanent Startup (SYSTEM)" } else { "Make Permanent Startup (SYSTEM)" }
+    $startButton.Enabled = ($processes.Count -eq 0)
+    $startButton.Text = if ($processes.Count) { "Agent Running" } else { "Start Agent" }
+    $stopButton.Enabled = ($processes.Count -gt 0)
+    $stopButton.Text = if ($processes.Count) { "Stop Agent" } else { "Agent Already Stopped" }
+    $restartButton.Enabled = [bool] $node
+    $quickPermanentButton.Enabled = $isAdmin
+    $installTaskButton.Enabled = $isAdmin
+    $elevateButton.Enabled = -not $isAdmin
     $nodePathBox.Text = if ($node) { $node } else { "" }
     $footer.Text = "Agent root: $AgentRoot"
     $taskDetailBox.Text = if ($task.Installed) {
@@ -929,10 +1063,13 @@ function Run-Action {
         $form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
         $footer.Text = "$Name..."
         $form.Refresh()
-        & $Action
+        $result = & $Action
         Refresh-Status
-        [System.Windows.Forms.MessageBox]::Show("$Name selesai.", "Device Snapshot Agent Manager", "OK", "Information") | Out-Null
+        $detail = if ($result) { [string] $result } else { "$Name selesai." }
+        $footer.Text = $detail
+        [System.Windows.Forms.MessageBox]::Show($detail, "Device Snapshot Agent Manager", "OK", "Information") | Out-Null
     } catch {
+        $footer.Text = "$Name gagal."
         [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "Device Snapshot Agent Manager", "OK", "Error") | Out-Null
     } finally {
         $form.Cursor = [System.Windows.Forms.Cursors]::Default
@@ -985,16 +1122,38 @@ $startButton.Add_Click({
                 throw "Node.js is required to start the agent."
             }
         }
-        Start-AgentProcess -NodePath $node | Out-Null
+        $result = Start-AgentProcess -NodePath $node
+        Start-Sleep -Milliseconds 500
+        $running = @(Get-AgentProcesses)
+        if ($running.Count -lt 1) {
+            throw "Agent start command returned but no running agent process was detected. Check Logs > agent-native.err.log."
+        }
+        return "$($result.Message) PID: " + (($running | ForEach-Object { $_.ProcessId }) -join ", ")
     }
 })
 
-$stopButton.Add_Click({ Run-Action "Stop agent" { Stop-AgentProcess | Out-Null } })
+$stopButton.Add_Click({
+    Run-Action "Stop agent" {
+        $stopped = Stop-AgentProcess
+        Start-Sleep -Milliseconds 500
+        $running = @(Get-AgentProcesses)
+        if ($running.Count -gt 0) {
+            throw "Stop requested, but agent is still running: " + (($running | ForEach-Object { $_.ProcessId }) -join ", ")
+        }
+        return "Agent stopped. Processes terminated: $stopped"
+    }
+})
 $restartButton.Add_Click({
     Run-Action "Restart agent" {
-        Stop-AgentProcess | Out-Null
+        $stopped = Stop-AgentProcess
         Start-Sleep -Milliseconds 600
-        Start-AgentProcess -NodePath (Get-NodePath) | Out-Null
+        $result = Start-AgentProcess -NodePath (Get-NodePath)
+        Start-Sleep -Milliseconds 500
+        $running = @(Get-AgentProcesses)
+        if ($running.Count -lt 1) {
+            throw "Agent restart command returned but no running agent process was detected."
+        }
+        return "Agent restarted. Stopped: $stopped. Running PID: " + (($running | ForEach-Object { $_.ProcessId }) -join ", ")
     }
 })
 $refreshButton.Add_Click({ Refresh-Status })
@@ -1008,9 +1167,10 @@ $saveButton.Add_Click({
 $saveRestartButton.Add_Click({
     Run-Action "Save config and restart agent" {
         Save-ConfigFromForm
-        Stop-AgentProcess | Out-Null
+        $stopped = Stop-AgentProcess
         Start-Sleep -Milliseconds 600
-        Start-AgentProcess -NodePath (Get-NodePath) | Out-Null
+        $result = Start-AgentProcess -NodePath (Get-NodePath)
+        return "Config saved and agent restarted. Stopped: $stopped. PID: $($result.Pid)"
     }
 })
 
