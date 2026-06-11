@@ -1,4 +1,5 @@
 agent/agent.config.json
+agent/agent.instance.lock
 agent/agent-manager.state.json
 agent/agent-native.state.json
 agent/agent.state.json

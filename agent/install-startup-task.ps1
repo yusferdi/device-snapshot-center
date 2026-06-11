@@ -13,11 +13,15 @@ if (-not (Test-Path -LiteralPath $Supervisor)) {
 }
 
 $PowerShell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+$InteractiveUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+if (-not $InteractiveUser -or $InteractiveUser -match '\\SYSTEM$') {
+    throw "Install this task from the interactive Windows user account, not SYSTEM."
+}
 $Action = New-ScheduledTaskAction `
     -Execute $PowerShell `
     -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Supervisor`" -AgentRoot `"$AgentRoot`" -NodePath `"$NodePath`""
-$Trigger = New-ScheduledTaskTrigger -AtStartup
-$Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest -LogonType ServiceAccount
+$Trigger = New-ScheduledTaskTrigger -AtLogOn -User $InteractiveUser
+$Principal = New-ScheduledTaskPrincipal -UserId $InteractiveUser -RunLevel Highest -LogonType Interactive
 $Settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
@@ -27,6 +31,9 @@ $Settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -WakeToRun:$WakeToRun.IsPresent
 
+if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+}
 Register-ScheduledTask `
     -TaskName $TaskName `
     -Action $Action `
@@ -35,5 +42,10 @@ Register-ScheduledTask `
     -Settings $Settings `
     -Force | Out-Null
 
+$AgentScript = Join-Path $AgentRoot "agent.js"
+Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and $_.CommandLine.Contains($AgentScript) } |
+    ForEach-Object { taskkill.exe /PID $_.ProcessId /T /F | Out-Null }
+Start-Sleep -Milliseconds 600
 Start-ScheduledTask -TaskName $TaskName
-Write-Output "Installed and started scheduled task '$TaskName' for $AgentRoot"
+Write-Output "Installed and started interactive scheduled task '$TaskName' for $InteractiveUser"

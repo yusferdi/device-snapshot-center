@@ -248,13 +248,10 @@ async function getAgentProcesses() {
       ? [{ pid: state.agentPid, commandLine: "agent.js", source: "manager-state" }]
       : [];
   }
-  const root = AGENT_ROOT.replace(/'/g, "''");
   const script = `
-$root = '${root}'
 $items = @(Get-CimInstance Win32_Process | Where-Object {
   $_.CommandLine -and
   $_.CommandLine -like '*agent.js*' -and
-  $_.CommandLine -like "*$root*" -and
   $_.CommandLine -notlike '*agent-manager.js*'
 } | Select-Object @{Name='pid';Expression={$_.ProcessId}}, @{Name='name';Expression={$_.Name}}, @{Name='commandLine';Expression={$_.CommandLine}})
 $items | ConvertTo-Json -Compress
@@ -301,15 +298,20 @@ $info = Get-ScheduledTaskInfo -TaskName '${safeTask}' -ErrorAction SilentlyConti
 async function startAgent(nodePath = process.execPath) {
   await fsp.mkdir(LOG_ROOT, { recursive: true });
   const state = await readManagerState();
-  if (isPidRunning(state.agentPid)) {
-    return { started: false, pid: state.agentPid, message: "Agent already running from manager." };
+  const existing = await getAgentProcesses();
+  if (existing.length > 0) {
+    return {
+      started: false,
+      pid: existing[0].pid,
+      message: "Agent already running; duplicate start was blocked.",
+    };
   }
 
   const stdoutPath = path.join(LOG_ROOT, "agent-gui.log");
   const stderrPath = path.join(LOG_ROOT, "agent-gui.err.log");
   const stdoutFd = fs.openSync(stdoutPath, "a");
   const stderrFd = fs.openSync(stderrPath, "a");
-  const child = spawn(nodePath || process.execPath, ["agent.js"], {
+  const child = spawn(nodePath || process.execPath, [path.join(AGENT_ROOT, "agent.js")], {
     cwd: AGENT_ROOT,
     detached: true,
     windowsHide: true,
@@ -329,6 +331,10 @@ async function startAgent(nodePath = process.execPath) {
 }
 
 async function stopAgent() {
+  const task = await getTaskStatus();
+  if (String(task?.state || "").toLowerCase() === "running") {
+    throw new Error("Persistent task is running and would restart the agent. Stop the task first, then stop the agent.");
+  }
   const state = await readManagerState();
   const pids = new Set();
   if (state.agentPid && isPidRunning(state.agentPid)) {
@@ -464,7 +470,7 @@ async function statusPayload() {
     processes,
     running: processes.length > 0,
     task,
-    sleepReality: "Windows sleep/hibernate stops CPU and network execution. Use SYSTEM startup, resume, prevent sleep, and optional wake timers; user code cannot keep running while the machine is truly asleep or hibernated.",
+    sleepReality: "Windows sleep/hibernate stops CPU and network execution. Interactive startup runs at sign-in and avoids Session 0 black frames. Windows Secure Desktop protects UAC and lock screen from capture/control.",
   };
 }
 

@@ -35,8 +35,8 @@
 
   const deviceSelect = root.querySelector("[data-live-device]");
   const transportSelect = root.querySelector("[data-live-transport-select]");
+  const transportHelp = root.querySelector("[data-transport-help]");
   const liveToggle = root.querySelector("[data-live-toggle]");
-  const frameToggle = root.querySelector("[data-frame-toggle]");
   const controlToggle = root.querySelector("[data-control-toggle]");
   const keyboardToggle = root.querySelector("[data-keyboard-toggle]");
   const refreshButton = root.querySelector("[data-live-refresh]");
@@ -51,6 +51,7 @@
   const viewer = root.querySelector("[data-live-viewer]");
   const stage = root.querySelector("[data-live-stage]");
   const screen = root.querySelector("[data-live-screen]");
+  const touchIndicator = root.querySelector("[data-live-touch-indicator]");
   const empty = root.querySelector("[data-live-empty]");
   const status = root.querySelector("[data-live-status]");
   const freshness = root.querySelector("[data-live-freshness]");
@@ -77,7 +78,6 @@
   let statusIntervalMs = speedProfiles.flow.status;
   let pointerBatchMs = speedProfiles.flow.pointer;
   let visibleLiveWanted = false;
-  let frameLoopEnabled = localStorage.getItem("dsc_live_frames") !== "off";
   let pointerBatchTimer = null;
   let pointerKeepaliveTimer = null;
   let pointerEvents = [];
@@ -105,21 +105,22 @@
   let webRtcFrameChannel = null;
   let webRtcSessionUid = "";
   let webRtcAnswerTimer = null;
+  let webRtcReconnectTimer = null;
+  let webRtcDisconnectTimer = null;
+  let webRtcReconnectAttempt = 0;
+  let webRtcClosing = false;
   let webRtcState = "idle";
   let webRtcFrameState = "idle";
   let webRtcFrameAssembly = null;
   let webRtcFrameObjectUrl = "";
   let webRtcMessageId = 0;
+  let touchIndicatorTimer = null;
   const webRtcPending = new Map();
   const remoteKeysDown = new Set();
   const pointerEventsSupported = "PointerEvent" in window;
 
-  if (frameToggle) {
-    frameToggle.checked = frameLoopEnabled;
-  }
-
-  function framesAreEnabled() {
-    return !frameToggle || frameToggle.checked;
+  function webRtcIsRequested() {
+    return ["webrtc", "auto"].includes(transportSelect?.value || "");
   }
 
   function selectedDeviceId() {
@@ -371,6 +372,20 @@
     if (transportSelect && transportSelect.value !== requested) {
       transportSelect.value = requested;
     }
+    updateTransportHelp(requested, selectedLabel);
+  }
+
+  function updateTransportHelp(requested = transportSelect?.value || "poll", activeLabel = "") {
+    if (!transportHelp) {
+      return;
+    }
+    const descriptions = {
+      poll: "Polling: paling kompatibel; agent mengecek perintah secara berkala.",
+      "long-poll": "Long poll: koneksi HTTP menunggu perintah, lebih responsif dan tetap mudah di-host.",
+      webrtc: "WebRTC: input dan frame langsung; otomatis kembali ke HTTP jika koneksi gagal.",
+      auto: `Auto: memilih koneksi terbaik dan fallback otomatis${activeLabel ? `; aktif: ${activeLabel}` : ""}.`,
+    };
+    transportHelp.textContent = descriptions[requested] || descriptions.poll;
   }
 
   function setCapabilities(data) {
@@ -392,8 +407,39 @@
     }
   }
 
+  function clearWebRtcRecoveryTimers() {
+    if (webRtcReconnectTimer) {
+      clearTimeout(webRtcReconnectTimer);
+      webRtcReconnectTimer = null;
+    }
+    if (webRtcDisconnectTimer) {
+      clearTimeout(webRtcDisconnectTimer);
+      webRtcDisconnectTimer = null;
+    }
+  }
+
+  function scheduleWebRtcReconnect(reason = "connection closed") {
+    if (
+      !webRtcIsRequested()
+      || document.hidden
+      || webRtcReconnectTimer
+      || ["connecting", "open"].includes(webRtcState)
+    ) {
+      return;
+    }
+    const delay = Math.min(10000, 750 * (2 ** Math.min(webRtcReconnectAttempt, 4)));
+    webRtcReconnectAttempt += 1;
+    setStatus(`WebRTC terputus; mencoba ulang dalam ${Math.round(delay / 100) / 10}s`, { detail: true });
+    webRtcReconnectTimer = window.setTimeout(() => {
+      webRtcReconnectTimer = null;
+      startWebRtcSession();
+    }, delay);
+  }
+
   function closeWebRtcSession(reason = "closed") {
     clearWebRtcAnswerTimer();
+    clearWebRtcRecoveryTimers();
+    webRtcClosing = true;
     for (const pending of webRtcPending.values()) {
       pending.reject(new Error(`WebRTC ${reason}`));
     }
@@ -435,6 +481,7 @@
     webRtcState = "idle";
     webRtcFrameState = "idle";
     webRtcFrameAssembly = null;
+    webRtcClosing = false;
   }
 
   function waitForIceGathering(peer) {
@@ -500,6 +547,7 @@
     } catch (error) {
       closeWebRtcSession("failed");
       setStatus(error.message);
+      scheduleWebRtcReconnect("answer failed");
     }
   }
 
@@ -512,7 +560,11 @@
   }
 
   function startWebRtcFrames() {
-    if ((transportSelect?.value || "") !== "webrtc" || !framesAreEnabled() || !webRtcFramesAvailable) {
+    if (
+      !webRtcIsRequested()
+      || !liveToggle?.checked
+      || !webRtcFramesAvailable
+    ) {
       return;
     }
     if (sendWebRtcFrameControl("start", { fps: activeSpeed === "burst" ? 16 : activeSpeed === "eco" ? 4 : 10 })) {
@@ -554,6 +606,14 @@
           expectedChunks: Number(message.chunks || 0),
         };
       } else if (message.kind === "frame-end" && webRtcFrameAssembly?.id === message.id) {
+        if (
+          webRtcFrameAssembly.expectedChunks > 0
+          && webRtcFrameAssembly.chunks.length !== webRtcFrameAssembly.expectedChunks
+        ) {
+          webRtcFrameAssembly = null;
+          setStatus("Frame WebRTC tidak lengkap; meminta frame berikutnya", { detail: true });
+          return;
+        }
         const blob = new Blob(webRtcFrameAssembly.chunks, { type: webRtcFrameAssembly.mime });
         const frame = {
           id: webRtcFrameAssembly.id,
@@ -578,7 +638,7 @@
       setStatus("Browser tidak mendukung WebRTC data channel");
       return;
     }
-    if (webRtcState === "connecting" || webRtcState === "open") {
+    if (webRtcState === "connecting" || webRtcState === "open" || webRtcReconnectTimer) {
       return;
     }
     closeWebRtcSession("restart");
@@ -598,9 +658,11 @@
       webRtcChannel = channel;
       webRtcFrameChannel = frameChannel;
       channel.onopen = () => {
+        clearWebRtcRecoveryTimers();
+        webRtcReconnectAttempt = 0;
         webRtcState = "open";
         setStatus("WebRTC data channel aktif");
-        setTransport({ transport: { requested: "webrtc", primary: "webrtc-data" } });
+        setTransport({ transport: { requested: transportSelect?.value || "webrtc", primary: "webrtc-data" } });
         startWebRtcFrames();
       };
       channel.onclose = () => {
@@ -608,9 +670,16 @@
           setStatus("WebRTC tertutup, fallback HTTP");
         }
         webRtcState = "idle";
+        if (!webRtcClosing) {
+          scheduleWebRtcReconnect("control channel closed");
+        }
       };
       channel.onerror = () => {
         setStatus("WebRTC error, fallback HTTP");
+        if (!webRtcClosing) {
+          closeWebRtcSession("control channel error");
+          scheduleWebRtcReconnect("control channel error");
+        }
       };
       frameChannel.onopen = () => {
         webRtcFrameState = "open";
@@ -618,9 +687,17 @@
       };
       frameChannel.onclose = () => {
         webRtcFrameState = "idle";
+        if (!webRtcClosing && webRtcState === "open") {
+          closeWebRtcSession("frame channel closed");
+          scheduleWebRtcReconnect("frame channel closed");
+        }
       };
       frameChannel.onerror = () => {
         setStatus("WebRTC frame channel error", { detail: true });
+        if (!webRtcClosing && webRtcState === "open") {
+          closeWebRtcSession("frame channel error");
+          scheduleWebRtcReconnect("frame channel error");
+        }
       };
       frameChannel.onmessage = (event) => {
         handleWebRtcFrameMessage(event).catch((error) => setStatus(error.message));
@@ -645,8 +722,27 @@
         }
       };
       peer.onconnectionstatechange = () => {
-        if (["failed", "disconnected", "closed"].includes(peer.connectionState)) {
+        if (peer.connectionState === "connected") {
+          clearWebRtcRecoveryTimers();
+          webRtcReconnectAttempt = 0;
+          startWebRtcFrames();
+          return;
+        }
+        if (peer.connectionState === "disconnected") {
+          if (!webRtcDisconnectTimer) {
+            webRtcDisconnectTimer = window.setTimeout(() => {
+              webRtcDisconnectTimer = null;
+              if (webRtcPeer === peer && peer.connectionState === "disconnected") {
+                closeWebRtcSession("disconnected");
+                scheduleWebRtcReconnect("peer disconnected");
+              }
+            }, 4000);
+          }
+          return;
+        }
+        if (["failed", "closed"].includes(peer.connectionState) && !webRtcClosing) {
           closeWebRtcSession(peer.connectionState);
+          scheduleWebRtcReconnect(`peer ${peer.connectionState}`);
         }
       };
 
@@ -662,6 +758,7 @@
     } catch (error) {
       closeWebRtcSession("failed");
       setStatus(error.message);
+      scheduleWebRtcReconnect("session failed");
     }
   }
 
@@ -681,7 +778,7 @@
   }
 
   async function postControl(action, payload = {}) {
-    if ((transportSelect?.value || "") === "webrtc" && webRtcState === "open") {
+    if (webRtcIsRequested() && webRtcState === "open") {
       try {
         const direct = await sendWebRtcControl(action, payload);
         return direct.response || { ok: true };
@@ -714,12 +811,11 @@
 
   function updateSwitchAria() {
     liveToggle?.setAttribute("aria-checked", liveToggle.checked ? "true" : "false");
-    frameToggle?.setAttribute("aria-checked", frameToggle.checked ? "true" : "false");
     controlToggle?.setAttribute("aria-checked", controlToggle.checked ? "true" : "false");
     controlToggle?.setAttribute("aria-disabled", controlToggle.disabled ? "true" : "false");
     keyboardToggle?.setAttribute("aria-checked", keyboardToggle.checked ? "true" : "false");
     keyboardToggle?.setAttribute("aria-disabled", keyboardToggle.disabled ? "true" : "false");
-    root.dataset.frames = framesAreEnabled() ? "on" : "off";
+    root.dataset.frames = liveToggle?.checked ? "on" : "off";
   }
 
   function controlIsReady() {
@@ -918,7 +1014,7 @@
       setQueue(data);
       setTransport(data);
       setCapabilities(data);
-      if ((transportSelect?.value || "") === "webrtc" && webRtcState === "idle") {
+      if (webRtcIsRequested() && webRtcState === "idle") {
         startWebRtcSession();
       }
       const ageSeconds = Number(data.device?.last_seen_age_seconds);
@@ -931,6 +1027,9 @@
       } else {
         root.dataset.agentState = "offline";
         setStatus(data.device?.last_seen ? `Agent offline${agentVersion} · last seen ${data.device.last_seen}` : "Agent belum pernah terhubung");
+      }
+      if (data.frame_error) {
+        setStatus(data.frame_error);
       }
     } catch (error) {
       root.dataset.agentState = "error";
@@ -945,12 +1044,7 @@
     if (captureInFlight || document.hidden) {
       return;
     }
-    if (!options.force && !framesAreEnabled()) {
-      setMode("Frames paused", "paused");
-      setStatus("Frame loop paused");
-      return;
-    }
-    if ((transportSelect?.value || "") === "webrtc" && webRtcFramesAvailable && webRtcFrameChannel?.readyState === "open") {
+    if (webRtcIsRequested() && webRtcFramesAvailable && webRtcFrameChannel?.readyState === "open") {
       if (options.force) {
         sendWebRtcFrameControl("capture_once", { id: Date.now() });
       } else {
@@ -989,7 +1083,7 @@
 
   async function runCaptureLoop(generation) {
     await requestFrame();
-    if (generation === liveLoopGeneration && liveToggle?.checked && framesAreEnabled() && !document.hidden) {
+    if (generation === liveLoopGeneration && liveToggle?.checked && !document.hidden) {
       captureTimer = window.setTimeout(() => runCaptureLoop(generation), captureIntervalMs);
     }
   }
@@ -1010,6 +1104,7 @@
 
   function stopLive() {
     stopTimers();
+    stopWebRtcFrames();
     setMode("Idle", "idle");
     setStatus("Idle");
     if (!document.hidden) {
@@ -1027,14 +1122,10 @@
     }
 
     visibleLiveWanted = false;
-    setMode(framesAreEnabled() ? "Live" : "Frames paused", framesAreEnabled() ? "live" : "paused");
-    if (!framesAreEnabled()) {
-      setStatus("Live status aktif, frame paused");
-    }
+    setMode("Live", "live");
     const generation = liveLoopGeneration;
-    if (framesAreEnabled()) {
-      runCaptureLoop(generation);
-    }
+    startWebRtcFrames();
+    runCaptureLoop(generation);
     runStatusLoop(generation);
   }
 
@@ -1069,27 +1160,6 @@
     }
     visibleLiveWanted = false;
     stopLive();
-  });
-
-  frameToggle?.addEventListener("change", () => {
-    frameLoopEnabled = frameToggle.checked;
-    localStorage.setItem("dsc_live_frames", frameLoopEnabled ? "on" : "off");
-    updateSwitchAria();
-    if (!frameLoopEnabled) {
-      stopWebRtcFrames();
-      if (captureTimer) {
-        clearTimeout(captureTimer);
-        captureTimer = null;
-      }
-      setMode("Frames paused", "paused");
-      setStatus("Frame loop paused");
-      return;
-    }
-    setStatus("Frame loop resumed");
-    startWebRtcFrames();
-    if (liveToggle?.checked && !document.hidden) {
-      startLive();
-    }
   });
 
   controlToggle?.addEventListener("change", () => {
@@ -1160,7 +1230,8 @@
   });
   transportSelect?.addEventListener("change", async () => {
     try {
-      if ((transportSelect.value || "poll") !== "webrtc") {
+      updateTransportHelp(transportSelect.value || "poll");
+      if (!webRtcIsRequested()) {
         closeWebRtcSession("transport change");
       }
       const data = await postLive("transport", { mode: transportSelect.value || "poll" });
@@ -1169,7 +1240,8 @@
         deviceSelect.selectedOptions[0].dataset.transportMode = transportSelect.value || "poll";
       }
       setStatus(`Metode koneksi: ${transportSelect.options[transportSelect.selectedIndex]?.text || transportSelect.value}`);
-      if ((transportSelect.value || "") === "webrtc") {
+      if (webRtcIsRequested()) {
+        clearWebRtcRecoveryTimers();
         startWebRtcSession();
       }
     } catch (error) {
@@ -1205,6 +1277,7 @@
     if (document.hidden) {
       visibleLiveWanted = Boolean(liveToggle?.checked);
       stopTimers();
+      stopWebRtcFrames();
       setMode(visibleLiveWanted ? "Paused" : "Idle", visibleLiveWanted ? "paused" : "idle");
       return;
     }
@@ -1224,7 +1297,7 @@
   }, true);
 
   function renderedImageBox() {
-    const rect = screen.getBoundingClientRect();
+    const rect = stage.getBoundingClientRect();
     if (!rect.width || !rect.height) {
       throw new Error("Frame belum siap");
     }
@@ -1270,6 +1343,26 @@
       x: Math.max(0, Math.min(Math.max(0, box.controlWidth - 1), x)),
       y: Math.max(0, Math.min(Math.max(0, box.controlHeight - 1), y)),
     };
+  }
+
+  function showTouchIndicator(event, tone = "tap") {
+    if (!touchIndicator || !stage || event?.pointerType !== "touch") {
+      return;
+    }
+    const rect = stage.getBoundingClientRect();
+    touchIndicator.style.left = `${Math.max(0, Math.min(rect.width, event.clientX - rect.left))}px`;
+    touchIndicator.style.top = `${Math.max(0, Math.min(rect.height, event.clientY - rect.top))}px`;
+    touchIndicator.dataset.tone = tone;
+    touchIndicator.classList.remove("is-visible");
+    void touchIndicator.offsetWidth;
+    touchIndicator.classList.add("is-visible");
+    if (touchIndicatorTimer) {
+      clearTimeout(touchIndicatorTimer);
+    }
+    touchIndicatorTimer = window.setTimeout(() => {
+      touchIndicator.classList.remove("is-visible");
+      touchIndicatorTimer = null;
+    }, 480);
   }
 
   function pointerButton(event) {
@@ -1600,8 +1693,12 @@
     }
   }
 
+  function isTouchPointer(event) {
+    return event?.pointerType === "touch";
+  }
+
   function shouldPanStage(event) {
-    return liveZoom > 1 && (!controlIsReady() || event.altKey || event.button === 1);
+    return liveZoom > 1 && (isTouchPointer(event) || !controlIsReady() || event.altKey || event.button === 1);
   }
 
   stage?.addEventListener("pointerdown", (event) => {
@@ -1612,14 +1709,17 @@
     stage.focus({ preventScroll: true });
     panState = {
       pointerId: event.pointerId,
+      pointerType: event.pointerType,
       startX: event.clientX,
       startY: event.clientY,
       panX: livePanX,
       panY: livePanY,
+      moved: false,
     };
     try {
       stage.setPointerCapture(event.pointerId);
     } catch {}
+    showTouchIndicator(event, "pan");
     setStatus("Pan zoom aktif", { detail: true });
   });
 
@@ -1646,6 +1746,7 @@
     try {
       stage.setPointerCapture(event.pointerId);
       appendPointerEvent("down", event, button);
+      showTouchIndicator(event, "control");
       startPointerKeepalive();
       flushPointerEvents();
       setStatus(`Pointer ${button} aktif`, { detail: true });
@@ -1657,9 +1758,16 @@
   stage?.addEventListener("pointermove", (event) => {
     if (panState && event.pointerId === panState.pointerId) {
       event.preventDefault();
-      livePanX = panState.panX + (event.clientX - panState.startX);
-      livePanY = panState.panY + (event.clientY - panState.startY);
-      updateZoomState();
+      const deltaX = event.clientX - panState.startX;
+      const deltaY = event.clientY - panState.startY;
+      if (Math.hypot(deltaX, deltaY) >= 7) {
+        panState.moved = true;
+      }
+      if (panState.moved) {
+        livePanX = panState.panX + deltaX;
+        livePanY = panState.panY + deltaY;
+        updateZoomState();
+      }
       return;
     }
     if (!pointerCanStream() || !controlIsReady()) {
@@ -1711,11 +1819,21 @@
   stage?.addEventListener("pointerup", (event) => {
     if (panState && event.pointerId === panState.pointerId) {
       event.preventDefault();
+      const tapped = panState.pointerType === "touch" && !panState.moved && controlIsReady();
       panState = null;
       if (stage.hasPointerCapture(event.pointerId)) {
         stage.releasePointerCapture(event.pointerId);
       }
-      setStatus("Pan zoom selesai", { detail: true });
+      if (tapped) {
+        try {
+          showTouchIndicator(event, "control");
+          sendRemoteClick({ ...screenPoint(event), button: "left" });
+        } catch (error) {
+          setStatus(error.message);
+        }
+      } else {
+        setStatus("Pan zoom selesai", { detail: true });
+      }
     }
   });
   stage?.addEventListener("pointercancel", (event) => finishPointerGesture(event, "cancel"));
@@ -1913,6 +2031,7 @@
   root.dataset.grid = "off";
   if (transportSelect) {
     transportSelect.value = deviceSelect?.selectedOptions[0]?.dataset.transportMode || "poll";
+    updateTransportHelp(transportSelect.value);
   }
   updateSwitchAria();
   updateSpeedButtons();

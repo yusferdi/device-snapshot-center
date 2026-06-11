@@ -13,6 +13,7 @@ $RuntimeRoot = Join-Path $AgentRoot "runtime"
 $LogRoot = Join-Path $AgentRoot "logs"
 $NodeRuntimeRoot = Join-Path $RuntimeRoot "node"
 $NativeStatePath = Join-Path $AgentRoot "agent-native.state.json"
+$InstanceLockPath = Join-Path $AgentRoot "agent.instance.lock"
 
 function Ensure-Directory {
     param([string] $Path)
@@ -196,15 +197,10 @@ function Get-AgentProcesses {
         return @()
     }
     $items = @()
-    $agentScript = Join-Path $AgentRoot "agent.js"
     try {
         $items = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
             $_.CommandLine -and
             $_.CommandLine.Contains("agent.js") -and
-            (
-                $_.CommandLine.Contains($AgentRoot) -or
-                $_.CommandLine.Contains($agentScript)
-            ) -and
             -not $_.CommandLine.Contains("agent-manager.js") -and
             -not $_.CommandLine.Contains("native-manager.ps1")
         } | Select-Object ProcessId, Name, CommandLine)
@@ -287,6 +283,9 @@ function Stop-AgentProcess {
         AgentPid = 0
         StoppedAt = (Get-Date).ToString("o")
     })
+    if (Test-Path -LiteralPath $InstanceLockPath) {
+        Remove-Item -LiteralPath $InstanceLockPath -Force -ErrorAction SilentlyContinue
+    }
     return $processes.Count
 }
 
@@ -297,6 +296,7 @@ function Get-TaskStatus {
             Installed = $false
             State = "Not installed"
             UserId = ""
+            LogonType = ""
             WakeToRun = $false
         }
     }
@@ -304,6 +304,7 @@ function Get-TaskStatus {
         Installed = $true
         State = [string] $task.State
         UserId = [string] $task.Principal.UserId
+        LogonType = [string] $task.Principal.LogonType
         WakeToRun = [bool] $task.Settings.WakeToRun
     }
 }
@@ -319,11 +320,15 @@ function Install-AgentTask {
     }
 
     $powerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+    $interactiveUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    if (-not $interactiveUser -or $interactiveUser -match "\\SYSTEM$") {
+        throw "Install permanent startup from the interactive Windows user account, not SYSTEM."
+    }
     $action = New-ScheduledTaskAction `
         -Execute $powerShell `
         -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$supervisor`" -AgentRoot `"$AgentRoot`" -NodePath `"$NodePath`""
-    $trigger = New-ScheduledTaskTrigger -AtStartup
-    $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest -LogonType ServiceAccount
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $interactiveUser
+    $principal = New-ScheduledTaskPrincipal -UserId $interactiveUser -RunLevel Highest -LogonType Interactive
     $settings = New-ScheduledTaskSettingsSet `
         -AllowStartIfOnBatteries `
         -DontStopIfGoingOnBatteries `
@@ -333,6 +338,9 @@ function Install-AgentTask {
         -StartWhenAvailable `
         -WakeToRun:$WakeToRun
 
+    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+        Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    }
     Register-ScheduledTask `
         -TaskName $TaskName `
         -Action $action `
@@ -340,13 +348,15 @@ function Install-AgentTask {
         -Principal $principal `
         -Settings $settings `
         -Force | Out-Null
+    Stop-AgentProcess | Out-Null
+    Start-Sleep -Milliseconds 600
     Start-ScheduledTask -TaskName $TaskName
 
     $installed = Get-TaskStatus
     if (-not $installed.Installed) {
         throw "Scheduled Task was not found after install."
     }
-    return "Installed $TaskName as SYSTEM and started it."
+    return "Installed $TaskName for interactive sign-in as $interactiveUser and started it."
 }
 
 function Install-PermanentStartupFromForm {
@@ -720,13 +730,13 @@ $configCard = New-Card `
     -Height 160
 $startupCard = New-Card `
     -Title "3. Permanent Startup" `
-    -Body "Install a SYSTEM Scheduled Task so the agent starts at boot before Windows logon and restarts if it exits." `
+    -Body "Install an interactive Scheduled Task at sign-in so screen capture and control stay in the visible Windows desktop." `
     -Width 360 `
     -Height 160
 
 $bootstrapButton = New-Button "Bootstrap Node + Dependencies" "primary" 285
 $startButton = New-Button "Start Agent" "success" 285
-$quickPermanentButton = New-Button "Make Permanent Startup (SYSTEM)" "warning" 305
+$quickPermanentButton = New-Button "Make Interactive Startup" "warning" 305
 Add-CardButton $runtimeCard $bootstrapButton
 Add-CardButton $configCard $startButton
 Add-CardButton $startupCard $quickPermanentButton
@@ -771,7 +781,7 @@ $note.Margin = New-Object System.Windows.Forms.Padding(8, 12, 8, 8)
 $note.BorderStyle = "FixedSingle"
 $note.BackColor = $ColorBlueSoft
 $note.ForeColor = $ColorText
-$note.Text = "Sleep/hibernate note: Windows stops CPU and network execution during true sleep/hibernate. This manager can make the agent start before login as SYSTEM, resume after wake, restart automatically, prevent sleep while running, and request wake timers when Windows and hardware allow it."
+$note.Text = "Windows boundary: true sleep/hibernate stops CPU and network. Lock screen and UAC use Secure Desktop, which cannot be captured or controlled by this agent. Interactive startup runs at sign-in and avoids Session 0 black frames."
 $overviewFlow.Controls.Add($note)
 
 $configFlow = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -878,7 +888,7 @@ $schedulerIntro.Margin = New-Object System.Windows.Forms.Padding(8, 0, 8, 14)
 $schedulerIntro.BorderStyle = "FixedSingle"
 $schedulerIntro.BackColor = $ColorAmberSoft
 $schedulerIntro.ForeColor = $ColorText
-$schedulerIntro.Text = "Permanent startup installs Windows Scheduled Task '$TaskName' as SYSTEM with ServiceAccount logon. It starts at boot before any user signs in, then the supervisor restarts the agent whenever it exits. Run this tab as Administrator."
+$schedulerIntro.Text = "Permanent startup installs Windows Scheduled Task '$TaskName' for the current interactive user at sign-in. This avoids Session 0 black frames and duplicate restart loops. UAC and lock screen remain protected by Windows Secure Desktop. Run this tab as Administrator."
 $schedulerFlow.Controls.Add($schedulerIntro)
 
 $taskNameBox = New-Object System.Windows.Forms.TextBox
@@ -893,7 +903,7 @@ New-Field $schedulerFlow "Task name" $taskNameBox
 New-Field $schedulerFlow "Node path" $nodePathBox
 $schedulerFlow.Controls.Add($wakeBox)
 
-$installTaskButton = New-Button "Install Permanent Startup (SYSTEM)" "warning" 275
+$installTaskButton = New-Button "Install Interactive Startup" "warning" 275
 $startTaskButton = New-Button "Start Task Now" "success" 165
 $stopTaskButton = New-Button "Stop Task" "default" 150
 $uninstallTaskButton = New-Button "Uninstall Task" "danger" 160
@@ -972,11 +982,19 @@ function Refresh-Status {
     $config = Get-AgentConfig
     $processes = @(Get-AgentProcesses)
     $task = Get-TaskStatus
+    $taskRunning = $task.Installed -and $task.State -eq "Running"
+    $agentRunning = $processes.Count -gt 0 -or $taskRunning
 
     $nodeLabel = if ($node) { "Node ready: " + (Split-Path -Leaf (Split-Path -Parent $node)) } else { "Node missing" }
     $nodeTone = if ($node) { "good" } else { "warn" }
-    $agentLabel = if ($processes.Count) { "Agent running: " + (($processes | ForEach-Object { $_.ProcessId }) -join ", ") } else { "Agent stopped" }
-    $agentTone = if ($processes.Count) { "good" } else { "warn" }
+    $agentLabel = if ($processes.Count) {
+        "Agent running: " + (($processes | ForEach-Object { $_.ProcessId }) -join ", ")
+    } elseif ($taskRunning) {
+        "Agent managed by running task"
+    } else {
+        "Agent stopped"
+    }
+    $agentTone = if ($agentRunning) { "good" } else { "warn" }
     $taskLabel = if ($task.Installed) { "Startup task: $($task.State)" } else { "Startup task missing" }
     $taskTone = if ($task.Installed) { "good" } else { "warn" }
     $isAdmin = Test-IsAdmin
@@ -986,11 +1004,11 @@ function Refresh-Status {
     Set-StatusLabel $agentStatus $agentLabel $agentTone
     Set-StatusLabel $taskStatus $taskLabel $taskTone
     Set-StatusLabel $adminStatus $adminLabel $adminTone
-    $quickPermanentButton.Text = if ($task.Installed) { "Repair Permanent Startup (SYSTEM)" } else { "Make Permanent Startup (SYSTEM)" }
-    $startButton.Enabled = ($processes.Count -eq 0)
-    $startButton.Text = if ($processes.Count) { "Agent Running" } else { "Start Agent" }
-    $stopButton.Enabled = ($processes.Count -gt 0)
-    $stopButton.Text = if ($processes.Count) { "Stop Agent" } else { "Agent Already Stopped" }
+    $quickPermanentButton.Text = if ($task.Installed) { "Repair Interactive Startup" } else { "Make Interactive Startup" }
+    $startButton.Enabled = -not $agentRunning
+    $startButton.Text = if ($agentRunning) { "Agent Running" } else { "Start Agent" }
+    $stopButton.Enabled = $agentRunning
+    $stopButton.Text = if ($agentRunning) { "Stop Agent" } else { "Agent Already Stopped" }
     $restartButton.Enabled = [bool] $node
     $quickPermanentButton.Enabled = $isAdmin
     $installTaskButton.Enabled = $isAdmin
@@ -998,9 +1016,9 @@ function Refresh-Status {
     $nodePathBox.Text = if ($node) { $node } else { "" }
     $footer.Text = "Agent root: $AgentRoot"
     $taskDetailBox.Text = if ($task.Installed) {
-        "Installed: yes`r`nState: $($task.State)`r`nRuns as: $($task.UserId)`r`nWakeToRun: $($task.WakeToRun)`r`nStartup behavior: starts at boot before Windows logon, then supervisor restarts agent if it exits."
+        "Installed: yes`r`nState: $($task.State)`r`nRuns as: $($task.UserId)`r`nLogon type: $($task.LogonType)`r`nStartup behavior: starts in the visible interactive desktop at sign-in; lock screen and UAC Secure Desktop are intentionally inaccessible."
     } else {
-        "Installed: no`r`nStartup behavior: agent will not start automatically before logon until you install the SYSTEM startup task.`r`nNext step: click Relaunch as Admin, then Install Permanent Startup (SYSTEM)."
+        "Installed: no`r`nStartup behavior: agent will not start automatically at sign-in until you install the interactive startup task.`r`nNext step: click Relaunch as Admin, then Install Interactive Startup."
     }
 
     $serverUriBox.Text = [string] $config.serverUri
@@ -1134,6 +1152,14 @@ $startButton.Add_Click({
 
 $stopButton.Add_Click({
     Run-Action "Stop agent" {
+        $task = Get-TaskStatus
+        if ($task.Installed -and $task.State -eq "Running") {
+            if (-not (Test-IsAdmin)) {
+                throw "Persistent task is running and would restart the agent. Relaunch as Admin, then stop the agent."
+            }
+            Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+            Start-Sleep -Milliseconds 500
+        }
         $stopped = Stop-AgentProcess
         Start-Sleep -Milliseconds 500
         $running = @(Get-AgentProcesses)
@@ -1145,6 +1171,17 @@ $stopButton.Add_Click({
 })
 $restartButton.Add_Click({
     Run-Action "Restart agent" {
+        $task = Get-TaskStatus
+        if ($task.Installed -and $task.State -eq "Running") {
+            if (-not (Test-IsAdmin)) {
+                throw "Persistent task manages this agent. Relaunch as Admin to restart it cleanly."
+            }
+            Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+            $stopped = Stop-AgentProcess
+            Start-Sleep -Milliseconds 700
+            Start-ScheduledTask -TaskName $TaskName
+            return "Persistent agent task restarted. Processes stopped: $stopped"
+        }
         $stopped = Stop-AgentProcess
         Start-Sleep -Milliseconds 600
         $result = Start-AgentProcess -NodePath (Get-NodePath)
@@ -1167,6 +1204,17 @@ $saveButton.Add_Click({
 $saveRestartButton.Add_Click({
     Run-Action "Save config and restart agent" {
         Save-ConfigFromForm
+        $task = Get-TaskStatus
+        if ($task.Installed -and $task.State -eq "Running") {
+            if (-not (Test-IsAdmin)) {
+                throw "Config saved. Persistent task manages this agent; relaunch as Admin to restart it cleanly."
+            }
+            Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+            $stopped = Stop-AgentProcess
+            Start-Sleep -Milliseconds 700
+            Start-ScheduledTask -TaskName $TaskName
+            return "Config saved and persistent agent task restarted. Processes stopped: $stopped"
+        }
         $stopped = Stop-AgentProcess
         Start-Sleep -Milliseconds 600
         $result = Start-AgentProcess -NodePath (Get-NodePath)

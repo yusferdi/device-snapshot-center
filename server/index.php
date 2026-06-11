@@ -509,6 +509,7 @@ header('X-App-Release: ' . app_release());
                     <div class="live-viewer" data-live-viewer>
                         <div class="live-stage" tabindex="0" aria-label="Live remote screen" data-live-stage>
                             <img data-live-screen alt="Live screen">
+                            <span class="touch-indicator" aria-hidden="true" data-live-touch-indicator></span>
                             <div class="live-empty" data-live-empty>Belum ada frame.</div>
                         </div>
                         <div class="live-viewer-bar">
@@ -596,6 +597,7 @@ header('X-App-Release: ' . app_release());
                                     <?php endforeach; ?>
                                 </select>
                             </div>
+                            <p class="control-help" data-transport-help>Polling: paling kompatibel; agent mengecek perintah secara berkala.</p>
                         </div>
                         <div class="control-cluster speed-cluster">
                             <span class="control-cluster-title">Speed</span>
@@ -610,10 +612,6 @@ header('X-App-Release: ' . app_release());
                             <label class="switch-row">
                                 <input type="checkbox" role="switch" aria-checked="false" aria-label="Live screen" data-live-toggle>
                                 <span>Live</span>
-                            </label>
-                            <label class="switch-row">
-                                <input type="checkbox" role="switch" aria-checked="true" aria-label="Kirim frame live" checked data-frame-toggle>
-                                <span>Frames</span>
                             </label>
                             <label class="switch-row">
                                 <input type="checkbox" role="switch" aria-checked="false" aria-label="Kontrol klik layar" data-control-toggle>

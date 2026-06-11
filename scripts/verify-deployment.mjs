@@ -122,11 +122,17 @@ if (remoteVersion) {
   if (remoteVersion.features?.quiet_awake !== true) {
     failures.push("remote release does not advertise quiet_awake");
   }
-  if (remoteVersion.features?.frame_loop_pause !== true) {
-    failures.push("remote release does not advertise frame_loop_pause");
-  }
   if (remoteVersion.features?.webrtc_direct_frames !== true) {
     failures.push("remote release does not advertise webrtc_direct_frames");
+  }
+  if (remoteVersion.features?.webrtc_auto_recovery !== true) {
+    failures.push("remote release does not advertise webrtc_auto_recovery");
+  }
+  if (remoteVersion.features?.mobile_touch_control !== true) {
+    failures.push("remote release does not advertise mobile_touch_control");
+  }
+  if (remoteVersion.features?.interactive_agent_persistence !== true) {
+    failures.push("remote release does not advertise interactive_agent_persistence");
   }
   if (remoteVersion.release !== expected.release) {
     console.log(`[verify] remote release label ${remoteVersion.release} differs from auto hash; validating file hashes`);

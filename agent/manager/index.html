@@ -20,8 +20,8 @@
     </header>
 
     <section class="notice">
-      <strong>Sleep/Hibernate reality</strong>
-      <span>Windows tidak menjalankan user code saat benar-benar sleep/hibernate. Panel ini menyiapkan auto-start sebelum logon, resume setelah wake, restart supervisor, dan opsi prevent sleep.</span>
+      <strong>Windows desktop boundary</strong>
+      <span>Interactive startup berjalan saat sign-in dan mencegah frame hitam Session 0. UAC, lock screen, sleep, dan hibernate tetap dilindungi atau dihentikan oleh Windows.</span>
     </section>
 
     <section class="grid">
@@ -57,7 +57,7 @@
       <article class="panel">
         <div class="panel-head">
           <div>
-            <p class="eyebrow">Boot</p>
+            <p class="eyebrow">Sign-in</p>
             <h2>Task Scheduler</h2>
           </div>
         </div>
@@ -75,7 +75,7 @@
           <span>Allow wake timer when Windows permits it</span>
         </label>
         <div class="actions wrap">
-          <button class="primary" id="installTaskBtn" type="button">Install Auto Start</button>
+          <button class="primary" id="installTaskBtn" type="button">Install Interactive Startup</button>
           <button id="startTaskBtn" type="button">Start Task</button>
           <button id="stopTaskBtn" type="button">Stop Task</button>
           <button class="danger" id="uninstallTaskBtn" type="button">Uninstall</button>

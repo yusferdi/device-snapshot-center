@@ -27,7 +27,17 @@ while ($true) {
         -RedirectStandardError $stderr `
         -PassThru
     $process.WaitForExit()
+    $process.Refresh()
     $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $recentError = if (Test-Path -LiteralPath $stderr) {
+        (Get-Content -LiteralPath $stderr -Tail 30 -ErrorAction SilentlyContinue) -join "`n"
+    } else {
+        ""
+    }
+    if ($recentError -match "Another local agent process is already running|superseded by a newer boot") {
+        Add-Content -LiteralPath (Join-Path $LogRoot "supervisor.log") -Value "[$stamp] duplicate agent detected; supervisor stopping instead of restart-loop"
+        break
+    }
     Add-Content -LiteralPath (Join-Path $LogRoot "supervisor.log") -Value "[$stamp] agent exited code=$($process.ExitCode); restarting in $RestartDelaySeconds second(s)"
     Start-Sleep -Seconds ([Math]::Max(1, $RestartDelaySeconds))
 }

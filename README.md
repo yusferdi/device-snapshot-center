@@ -137,12 +137,12 @@ Fitur Native Agent Manager:
 - berjalan sebagai window Windows native, bukan halaman browser;
 - mencari Node.js dari `DEVICE_SNAPSHOT_NODE`, runtime portable lokal, atau `PATH`;
 - tombol `Bootstrap Node + Dependencies` mengunduh Node.js LTS portable dari `nodejs.org`, lalu menjalankan `npm install --omit=dev`;
-- Overview memakai alur 3 langkah: bootstrap runtime, start agent, lalu `Make Permanent Startup (SYSTEM)`;
+- Overview memakai alur 3 langkah: bootstrap runtime, start agent, lalu `Make Interactive Startup`;
 - edit `serverUri`, enrollment code, nama device, interval polling, WebRTC toggle, scroll multiplier, folder log/transfer, dan capability toggles;
 - `Save` untuk hot-reload config yang didukung;
 - `Save + Restart` untuk restart agent setelah perubahan besar;
 - start, stop, dan restart agent lokal;
-- install/start/stop/uninstall Scheduled Task `DeviceSnapshotAgent` sebagai startup permanen sebelum Windows logon;
+- install/start/stop/uninstall Scheduled Task `DeviceSnapshotAgent` sebagai startup permanen pada interactive sign-in;
 - memilih `NodePath` dan opsi `WakeToRun` jika Windows/hardware mengizinkan wake timer;
 - membaca log `agent-native`, `agent-service`, `supervisor`, dan `npm-install`.
 
@@ -165,13 +165,13 @@ http://127.0.0.1:8765/
 
 GUI web hanya bind ke `127.0.0.1`, sehingga panel manager tidak dibuka ke jaringan publik.
 
-Untuk menjalankan agent Windows tanpa logon, buka PowerShell sebagai Administrator di folder `agent/`, lalu jalankan:
+Untuk membuat agent otomatis berjalan pada desktop interaktif setelah Windows sign-in, buka PowerShell sebagai Administrator di folder `agent/`, lalu jalankan:
 
 ```powershell
 .\install-startup-task.ps1 -NodePath "C:\nvm4w\nodejs\node.exe"
 ```
 
-Installer membuat Scheduled Task `DeviceSnapshotAgent` sebagai `SYSTEM` (`LogonType=ServiceAccount`, `RunLevel=Highest`) dan menjalankan `agent-supervisor.ps1`, sehingga agent otomatis start saat boot sebelum user login Windows dan restart jika proses agent keluar. Hapus dengan:
+Installer membuat Scheduled Task `DeviceSnapshotAgent` untuk user interaktif (`LogonType=Interactive`, `RunLevel=Highest`) dan menjalankan `agent-supervisor.ps1`. Mode ini sengaja dipilih karena proses `SYSTEM` di Session 0 hanya menghasilkan frame hitam dan tidak dapat mengontrol desktop user. Hapus dengan:
 
 ```powershell
 .\uninstall-startup-task.ps1
@@ -179,7 +179,7 @@ Installer membuat Scheduled Task `DeviceSnapshotAgent` sebagai `SYSTEM` (`LogonT
 
 Agent tidak bisa memproses command saat device benar-benar sleep/hibernate karena CPU dan network berhenti. Tidak ada Node.js, Scheduled Task, service, atau GUI biasa yang bisa terus mengeksekusi kode ketika mesin benar-benar asleep/hibernated. Yang bisa dilakukan adalah:
 
-- membuat agent start sebelum Windows logon lewat Scheduled Task `SYSTEM`;
+- membuat agent start otomatis saat user Windows sign-in lewat Scheduled Task interaktif;
 - membiarkan proses resume setelah wake;
 - mengaktifkan `preventSleepWhileRunning=true` agar Windows tidak masuk sleep saat agent aktif;
 - memasang task dengan `-WakeToRun` atau lewat GUI jika perangkat, BIOS, Windows power policy, dan trigger task mengizinkan wake timer.
@@ -195,7 +195,7 @@ Agent tidak bisa memproses command saat device benar-benar sleep/hibernate karen
 - Permission profile per device: `view`, `control`, `files`, atau `full`.
 - Snapshot layar melalui action `capture_screen`, dengan preview gambar langsung di dashboard.
 - Live screen di dashboard PHP melalui frame berkala dari agent.
-- Toggle `Frames` dapat mematikan loop capture live tanpa memutus status agent; tombol `Capture frame` tetap bisa mengambil satu frame manual.
+- Toggle `Live` mengendalikan status dan frame stream sebagai satu sesi; tombol `Capture frame` tetap bisa mengambil satu frame manual.
 - Fullscreen live screen melalui browser Fullscreen API.
 - Mode live speed `Eco`, `Flow`, dan `Burst` untuk mengatur ritme request frame dari dashboard.
 - Profil speed benar-benar berbeda: `Eco` menghemat request, `Flow` seimbang, dan `Burst` mengutamakan frame serta input paling cepat.
@@ -209,7 +209,7 @@ Agent tidak bisa memproses command saat device benar-benar sleep/hibernate karen
 - Upload/download artifact memiliki deadline, sedangkan completion command mencoba ulang secara idempotent saat jaringan terganggu.
 - Metode koneksi dapat dipilih per-device dari dashboard: `Polling`, `Long poll`, atau `Auto`, tanpa restart agent. Agent mulai dengan `Polling`.
 - Metode `WebRTC` tersedia sebagai data channel direct untuk mouse/keyboard saat agent `1.9+` berjalan; jika handshake gagal, input otomatis fallback ke HTTP polling.
-- Zoom live screen mendukung `Fit`, zoom in, zoom out, dan pan/geser saat zoom > 1; mapping klik tetap dihitung terhadap koordinat layar agent.
+- Zoom live screen mendukung `Fit`, zoom in, zoom out, dan pan/geser saat zoom > 1; mapping klik dihitung dari stage sebelum transform agar tetap presisi. Pada mobile, tap mengirim klik dan drag satu jari saat zoom melakukan pan.
 - Grid overlay opsional untuk membantu validasi alignment layar dan koordinat klik.
 - Klik mouse jarak jauh melalui action `mouse_click` untuk left-click, double-click, dan right-click, hanya jika `allowRemoteControl` aktif di config agent.
 - Pointer drag-and-drop melalui action `mouse_input` dengan event berurutan `down`, `move`, `up`, dan `cancel`. Move batch lama dikompaksi agar antrean tidak tertinggal.
@@ -270,11 +270,13 @@ Prototype ini sengaja tidak menyediakan arbitrary shell command atau akses file 
 
 Fondasi saat ini memulai agent melalui `http-poll`, dengan `http-long-poll` dan `webrtc-data` tersedia sebagai metode yang dapat dipilih dari dashboard. Server mengirim preferensi transport pada setiap respons poll, sehingga metode dapat berubah tanpa restart agent.
 
-`Polling` berarti agent bertanya ke server secara berkala lalu tidur sebentar. `Long poll` berarti agent membuka request yang ditahan server sampai ada command baru atau timeout, sehingga command bisa lebih cepat diterima tanpa spam request kosong. `Auto` mempertahankan metode stabil dan membiarkan agent fallback jika long-poll diblokir proxy.
+`Polling` berarti agent bertanya ke server secara berkala lalu tidur sebentar. `Long poll` berarti agent membuka request yang ditahan server sampai ada command baru atau timeout, sehingga command bisa lebih cepat diterima tanpa spam request kosong. `Auto` mencoba WebRTC dari browser ketika tersedia, tetap mempertahankan HTTP sebagai fallback, dan membiarkan agent turun ke polling jika request panjang diblokir proxy.
 
 Dashboard menyimpan `transport_mode` per device dan metode efektif terakhir. `Polling` adalah default. Pilihan `Long poll` akan tetap jatuh ke `Polling` jika runtime server tidak mendukung request panjang.
 
-`WebRTC` sekarang memakai endpoint signaling PHP `api/webrtc.php` dan Node dependency `node-datachannel`. Jalur ini mempercepat input mouse/keyboard melalui data channel direct. Agent `1.11+` juga menambahkan direct frame channel `screen-frame`: saat metode `WebRTC` aktif dan toggle `Frames` menyala, browser menerima JPEG frame langsung dari agent tanpa upload artifact, database, atau storage. Jalur HTTP snapshot tetap menjadi fallback dan tombol `Capture frame` tetap bisa mengambil frame manual. Pada NAT ketat, konfigurasi TURN diperlukan agar WebRTC dapat terhubung stabil.
+`WebRTC` sekarang memakai endpoint signaling PHP `api/webrtc.php` dan Node dependency `node-datachannel`. Jalur ini mempercepat input mouse/keyboard melalui data channel direct. Agent `1.11+` juga menambahkan direct frame channel `screen-frame`: saat metode `WebRTC` dan toggle `Live` aktif, browser menerima JPEG frame langsung dari agent tanpa upload artifact, database, atau storage. Browser memberi grace period saat koneksi sementara `disconnected`, mencoba reconnect otomatis, dan tetap fallback ke HTTP. Pada NAT ketat, konfigurasi TURN diperlukan agar WebRTC dapat terhubung stabil.
+
+Windows UAC dan lock screen memakai Secure Desktop. Agent biasa tidak dapat menangkap atau mengontrol desktop tersebut. Agent `1.12+` mendeteksi Session 0/Secure Desktop, menghentikan capture/control sementara dengan error jelas, lalu melanjutkan setelah desktop interaktif tersedia.
 
 - `APP_AGENT_LONG_POLL_MS=15000`: durasi tunggu request agent; isi `0` untuk memaksa short-poll.
 - `APP_LIVE_CAPTURE_INTERVAL_MS=1000`: interval default request frame live; mode Burst menurunkannya otomatis.

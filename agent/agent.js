@@ -9,9 +9,10 @@ import robot from "robotjs";
 import screenshotDesktop from "screenshot-desktop";
 
 const execFileAsync = promisify(execFile);
-const AGENT_VERSION = "1.11.0";
+const AGENT_VERSION = "1.12.0";
 const AGENT_BOOT_ID = crypto.randomUUID();
 const AGENT_BOOT_STARTED_AT = Date.now();
+const INSTANCE_LOCK_PATH = path.resolve("agent.instance.lock");
 const CONFIG_PATH = path.resolve("agent.config.json");
 const EXAMPLE_CONFIG_PATH = path.resolve("agent.config.example.json");
 const STATE_PATH = path.resolve("agent.state.json");
@@ -35,6 +36,62 @@ const DIAGNOSTIC_COMMANDS = {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function processIsAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+function releaseInstanceLock() {
+  try {
+    const lock = JSON.parse(fs.readFileSync(INSTANCE_LOCK_PATH, "utf8"));
+    if (Number(lock?.pid) === process.pid) {
+      fs.unlinkSync(INSTANCE_LOCK_PATH);
+    }
+  } catch {}
+}
+
+function acquireInstanceLock() {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const fd = fs.openSync(INSTANCE_LOCK_PATH, "wx");
+      fs.writeFileSync(fd, JSON.stringify({
+        pid: process.pid,
+        bootId: AGENT_BOOT_ID,
+        startedAt: new Date().toISOString(),
+      }));
+      fs.closeSync(fd);
+      process.once("exit", releaseInstanceLock);
+      return;
+    } catch (error) {
+      if (error?.code !== "EEXIST") {
+        throw error;
+      }
+      try {
+        const existing = JSON.parse(fs.readFileSync(INSTANCE_LOCK_PATH, "utf8"));
+        if (processIsAlive(Number(existing?.pid))) {
+          throw new Error(`Another local agent process is already running (PID ${existing.pid}).`);
+        }
+        fs.unlinkSync(INSTANCE_LOCK_PATH);
+      } catch (lockError) {
+        if (/Another local agent process/.test(String(lockError?.message || ""))) {
+          throw lockError;
+        }
+        try {
+          fs.unlinkSync(INSTANCE_LOCK_PATH);
+        } catch {}
+      }
+    }
+  }
+  throw new Error("Could not acquire the local agent instance lock.");
 }
 
 async function withTimeout(promise, timeoutMs, message) {
@@ -627,6 +684,8 @@ async function runProcessWithInput(file, args, input, timeoutMs, label) {
 let cachedDisplays = [];
 let cachedDisplaysAt = 0;
 let lastUploadedScreenHash = "";
+let cachedDesktopState = null;
+let cachedDesktopStateAt = 0;
 
 async function cachedDisplayList() {
   if (Date.now() - cachedDisplaysAt < 60000) {
@@ -637,11 +696,72 @@ async function cachedDisplayList() {
   return cachedDisplays;
 }
 
+async function getDesktopState() {
+  if (process.platform !== "win32") {
+    return {
+      interactive: true,
+      sessionId: null,
+      blocker: "",
+      reason: "",
+    };
+  }
+  if (cachedDesktopState && Date.now() - cachedDesktopStateAt < 900) {
+    return cachedDesktopState;
+  }
+
+  try {
+    const { stdout } = await execFileAsync("powershell.exe", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$sessionId=[System.Diagnostics.Process]::GetCurrentProcess().SessionId; $blocker=Get-Process -Name LogonUI,consent -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $sessionId } | Select-Object -First 1 -ExpandProperty ProcessName; Write-Output ($sessionId.ToString() + '|' + [string]$blocker)",
+    ], {
+      windowsHide: true,
+      timeout: 1500,
+      maxBuffer: 4096,
+    });
+    const [sessionText, blocker = ""] = String(stdout || "").trim().split("|", 2);
+    const sessionId = Number(sessionText);
+    const normalizedBlocker = String(blocker || "").trim();
+    const interactive = Number.isFinite(sessionId) && sessionId > 0 && normalizedBlocker === "";
+    cachedDesktopState = {
+      interactive,
+      sessionId: Number.isFinite(sessionId) ? sessionId : null,
+      blocker: normalizedBlocker,
+      reason: sessionId === 0
+        ? "agent berjalan di Windows Session 0"
+        : normalizedBlocker
+          ? `Windows Secure Desktop aktif (${normalizedBlocker})`
+          : interactive
+            ? ""
+            : "desktop interaktif tidak tersedia",
+    };
+  } catch (error) {
+    cachedDesktopState = {
+      interactive: false,
+      sessionId: null,
+      blocker: "",
+      reason: `status desktop tidak dapat diverifikasi: ${error.message}`,
+    };
+  }
+  cachedDesktopStateAt = Date.now();
+  return cachedDesktopState;
+}
+
+async function requireInteractiveDesktop(operation) {
+  const desktop = await getDesktopState();
+  if (!desktop.interactive) {
+    throw new Error(`${operation} paused: ${desktop.reason}. Sign in atau tutup Secure Desktop untuk melanjutkan.`);
+  }
+  return desktop;
+}
+
 async function captureScreen(config, payload) {
   if (!config.allowScreenCapture) {
     throw new Error("Screen capture is disabled in agent.config.json.");
   }
 
+  const desktop = await requireInteractiveDesktop("Screen capture");
   const timeoutMs = Math.round(clampNumber(payload?.timeoutMs, 3000, 30000, 15000));
   const fileName = `screen-${new Date().toISOString().replace(/[:.]/g, "-")}.jpg`;
   const startedAt = Date.now();
@@ -669,6 +789,7 @@ async function captureScreen(config, payload) {
       capturedAt: new Date().toISOString(),
       displays,
       controlScreenSize: robot.getScreenSize(),
+      desktop,
     },
   };
 }
@@ -774,6 +895,7 @@ async function mouseClick(config, payload) {
     throw new Error("Remote mouse control is disabled in agent.config.json.");
   }
 
+  await requireInteractiveDesktop("Remote mouse");
   const screenSize = robot.getScreenSize();
   const x = clampInteger(payload?.x, 0, Math.max(0, screenSize.width - 1), -1);
   const y = clampInteger(payload?.y, 0, Math.max(0, screenSize.height - 1), -1);
@@ -847,6 +969,7 @@ async function mouseInput(config, payload) {
     throw new Error("Remote mouse control is disabled in agent.config.json.");
   }
 
+  await requireInteractiveDesktop("Remote pointer");
   const events = Array.isArray(payload?.events) ? payload.events : [];
   if (!events.length || events.length > 128) {
     throw new Error("payload.events must contain between 1 and 128 pointer events.");
@@ -1006,6 +1129,7 @@ async function keyboardInput(config, payload) {
     throw new Error("Remote keyboard input is disabled in agent.config.json.");
   }
 
+  await requireInteractiveDesktop("Remote keyboard");
   const kind = String(payload?.kind || "key").toLowerCase();
   if (kind === "text") {
     const text = String(payload?.text || "");
@@ -1106,6 +1230,7 @@ async function clipboardWrite(config, payload) {
     throw new Error("Remote clipboard paste is disabled in agent.config.json.");
   }
 
+  await requireInteractiveDesktop("Remote clipboard");
   const paste = payload?.paste !== false;
   if (paste && !config.allowKeyboardInput) {
     throw new Error("Paste requires allowKeyboardInput in agent.config.json.");
@@ -1172,6 +1297,7 @@ async function keyboardState(config, payload) {
     throw new Error("Remote keyboard input is disabled in agent.config.json.");
   }
 
+  await requireInteractiveDesktop("Remote keyboard");
   const key = normalizeRobotKey(payload?.key);
   const state = String(payload?.state || "").toLowerCase();
   if (!["down", "up"].includes(state)) {
@@ -1356,6 +1482,7 @@ async function handleCommand(config, state, command) {
           timestamp: new Date().toISOString(),
           pid: process.pid,
           uptimeSeconds: process.uptime(),
+          desktop: await getDesktopState(),
         },
       });
       return;
@@ -1614,13 +1741,13 @@ function sendBinaryDataChannel(channel, buffer) {
 }
 
 function stopWebRtcFrameLoop(reason = "stopped") {
-  if (activeWebRtcFrameLoop) {
-    activeWebRtcFrameLoop.stopped = true;
-    activeWebRtcFrameLoop = null;
+  if (!activeWebRtcFrameLoop) {
+    return false;
   }
-  if (reason) {
-    console.log(`[agent] WebRTC frame loop ${reason}`);
-  }
+  activeWebRtcFrameLoop.stopped = true;
+  activeWebRtcFrameLoop = null;
+  console.log(`[agent] WebRTC frame loop stopped (${reason})`);
+  return true;
 }
 
 async function sendWebRtcFrame(channel, config, frameId) {
@@ -1753,6 +1880,8 @@ async function answerWebRtcSession(config, state, session) {
     if (["failed", "disconnected", "closed"].includes(String(stateName))) {
       console.log(`[agent] WebRTC ${stateName}`);
       if (activeWebRtcSessionUid === sessionUid) {
+        stopWebRtcFrameLoop(`peer ${stateName}`);
+        activeWebRtcFrameChannel = null;
         activeWebRtcPeer = null;
         activeWebRtcSessionUid = "";
       }
@@ -2049,6 +2178,7 @@ async function pollOnce(config, state) {
 }
 
 async function main() {
+  acquireInstanceLock();
   const config = await loadConfig();
   await rememberConfigMtime();
   const state = await enrollIfNeeded(config, await loadState());

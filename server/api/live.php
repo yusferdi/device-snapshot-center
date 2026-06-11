@@ -328,6 +328,7 @@ if (!in_array($action, ['status', 'capture', 'click', 'pointer', 'key', 'transpo
 $latest = latest_screen_command($deviceId);
 $pending = pending_action_flags($deviceId);
 $frame = null;
+$frameError = null;
 if ($latest) {
     $result = [];
     if (!empty($latest['result_json'])) {
@@ -346,6 +347,23 @@ if ($latest) {
         'observed_at' => $latest['observed_at'] ?? $latest['completed_at'],
         'screen' => $result['screen'] ?? null,
     ];
+}
+$stmt = db()->prepare(
+    "SELECT id, status, error_text
+     FROM commands
+     WHERE device_id = ?
+       AND action = 'capture_screen'
+     ORDER BY id DESC
+     LIMIT 1"
+);
+$stmt->execute([$deviceId]);
+$latestCapture = $stmt->fetch();
+if (
+    $latestCapture
+    && ($latestCapture['status'] ?? '') === 'failed'
+    && (!$latest || (int) $latestCapture['id'] > (int) $latest['id'])
+) {
+    $frameError = clean_text((string) ($latestCapture['error_text'] ?? 'Frame capture gagal'), 500);
 }
 
 json_response([
@@ -366,6 +384,7 @@ json_response([
     'pending_keyboard' => $pending['keyboard_input'],
     'pending_keyboard_state' => $pending['keyboard_state'],
     'pending_clipboard' => $pending['clipboard_write'],
+    'frame_error' => $frameError,
     'transport' => [
         'profile' => 'adaptive-http',
         'requested' => (string) ($device['transport_mode'] ?? 'poll'),
