@@ -177,6 +177,14 @@ Installer membuat Scheduled Task `DeviceSnapshotAgent` untuk user interaktif (`L
 .\uninstall-startup-task.ps1
 ```
 
+Untuk menjaga satu agent stable tetap online saat agent lain dipakai menguji perubahan, jalankan dual-agent launcher dari desktop Windows interaktif:
+
+```powershell
+.\start-dual-agents.ps1 -NodePath "C:\nvm4w\nodejs\node.exe" -SecondaryName "Device Snapshot Lab" -InstallCurrentUserStartup
+```
+
+Launcher membuat instance lab di `agent/instances/agent-2/` dengan config, identity, state, lock, transfer, dan log terpisah. Agent stable dan lab memakai source code yang sama, tetapi proses stable yang sudah berjalan tidak terpengaruh oleh edit source sampai proses tersebut direstart. Launcher dan supervisor menolak Session 0, melewati instance yang sudah hidup, dan menjalankan keduanya kembali setelah interactive sign-in melalui startup current-user.
+
 Agent tidak bisa memproses command saat device benar-benar sleep/hibernate karena CPU dan network berhenti. Tidak ada Node.js, Scheduled Task, service, atau GUI biasa yang bisa terus mengeksekusi kode ketika mesin benar-benar asleep/hibernated. Yang bisa dilakukan adalah:
 
 - membuat agent start otomatis saat user Windows sign-in lewat Scheduled Task interaktif;

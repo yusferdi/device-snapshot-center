@@ -5,6 +5,7 @@ agent/agent-native.state.json
 agent/agent.state.json
 agent/node_modules/
 agent/runtime/
+agent/instances/
 agent/*.log
 agent/*.err
 agent/logs/

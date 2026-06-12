@@ -9,7 +9,7 @@ import robot from "robotjs";
 import screenshotDesktop from "screenshot-desktop";
 
 const execFileAsync = promisify(execFile);
-const AGENT_VERSION = "1.12.0";
+const AGENT_VERSION = "1.12.1";
 const AGENT_BOOT_ID = crypto.randomUUID();
 const AGENT_BOOT_STARTED_AT = Date.now();
 const INSTANCE_LOCK_PATH = path.resolve("agent.instance.lock");
@@ -2247,6 +2247,7 @@ async function main() {
 main().catch((error) => {
   releaseActiveMouseButtons("fatal error");
   releaseActiveKeyboardKeys("fatal error");
+  releaseInstanceLock();
   console.error(`[agent] fatal: ${error.message}`);
-  process.exitCode = 1;
+  setTimeout(() => process.exit(1), 25);
 });
